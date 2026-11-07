@@ -613,6 +613,12 @@ else
   echo "skip — the uid-collision arms need a harness user with uid >= 1000 (this one is $OLDU)"
 fi
 
+# EXECUTED, the owner's own storage: the --to path under core's errexit too.
+xreset; rm -f "$FIVE_CONNECTORD_ENV"; MINE="$TMP/w/mine"; xrun enable --to="$MINE"
+check "EXECUTED --to: enable on a box with no 5dive identity exits 0" '[[ $(rc) == 0 ]] || { cat "$TMP/out"; false; }'
+: >"$TMP/curl.argv"; xrun run
+check "EXECUTED --to: the first run exits 0, records it, and calls no 5dive API" '[[ $(rc) == 0 ]] && jq -e ".ok == true" "$FIVE_BACKUP_STATE/status.json" >/dev/null && ! grep -q "api.test" "$TMP/curl.argv" || { cat "$TMP/out"; false; }'
+
 # --- the manifests: what `5dive plugin add 5dive-ai/5dive-backup` reads -------------
 M=backup/.claude-plugin/plugin.json
 check "MANIFEST: the plugin is named after its folder (contract 1)" '[[ "$(jq -r .name "$M")" == backup ]]'
