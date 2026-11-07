@@ -1,5 +1,21 @@
 # Changes
 
+## 1.1.0 — 2026-11-07 (DIVE-7873)
+
+Your own storage (lodar: «should we make it customizable?»).
+
+- `5dive backup enable --to=<restic repository>`: back up to a local path or any
+  restic backend (s3, b2, sftp, rest, azure, gs, swift, rclone) instead of 5dive's
+  storage. Its keys come from the box's secret store (`5dive secret write …
+  --connector=backup`), only the variables restic reads, never argv. A password
+  inside the URL is refused.
+- That path makes no request to the 5dive API (no enrol, no report, no listing),
+  and it runs on a server 5dive does not host. `restore --to=` brings a backup back
+  from it on a fresh box. The key, the recovery code and its DM are unchanged.
+- A local destination is left out of its own backup. `status` names the destination.
+- Tests: backup_unit TO1-TO10 (zero API requests asserted on enable, run, sources
+  and restore); mutants m10-m12.
+
 ## 1.0.0 — 2026-11-07 (DIVE-7873)
 
 First release, moved out of the open-source CLI before it ever shipped there

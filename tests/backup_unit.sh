@@ -57,13 +57,14 @@ reset() {
   export FIVE_CONNECTORD_ENV="$TMP/w/etc/connectord.env" FIVE_API_BASE_FILE="$TMP/none" FIVE_API_BASE="https://api.test"
   printf 'CONNECTORD_TOKEN=boxtok_SECRET123\n' >"$FIVE_CONNECTORD_ENV"
   REGISTRY="$TMP/w/state/agents.json"; printf '{"agents":{"ava":{}}}' >"$REGISTRY"
-  : >"$TMP/curl.argv"; : >"$TMP/curl.stdin"; : >"$TMP/curl.body"; : >"$TMP/restic.argv"; : >"$TMP/tg"; : >"$TMP/restic.pw"; : >"$TMP/restic.sess"; : >"$TMP/sys"
+  : >"$TMP/restic.ak"; CONNECTORS_DIR="$TMP/w/etc/connectors"; : >"$TMP/curl.argv"; : >"$TMP/curl.stdin"; : >"$TMP/curl.body"; : >"$TMP/restic.argv"; : >"$TMP/tg"; : >"$TMP/restic.pw"; : >"$TMP/restic.sess"; : >"$TMP/sys"
   export RESTIC_PROBE_RC="" RESTIC_BACKUP_RC=0 RESTIC_SILENT="" LIST_FAIL="" T="$TMP"
   # restic stub: logs the repository + argv and the password it was given, then
   # acts on $T/repos/<repo>/keys (one password per line).
   cat >"$FIVE_BACKUP_RESTIC" <<'EOF'
 #!/usr/bin/env bash
 printf '%s %s\n' "${RESTIC_REPOSITORY:-}" "$*" >>"$T/restic.argv"; printf '%s\n' "${AWS_SESSION_TOKEN:-}" >>"$T/restic.sess"
+printf 'ak=%s sk=%s\n' "${AWS_ACCESS_KEY_ID:-}" "${AWS_SECRET_ACCESS_KEY:-}" >>"$T/restic.ak"
 [[ -n "${RESTIC_PASSWORD_FILE:-}" ]] && printf 'pw=%s mode=%s\n' "$(cat "$RESTIC_PASSWORD_FILE")" "$(stat -c %a "$RESTIC_PASSWORD_FILE")" >>"$T/restic.pw"
 R="$T/repos/${RESTIC_REPOSITORY##*/}"; pw=$(cat "$RESTIC_PASSWORD_FILE" 2>/dev/null)
 opens() { [[ -f "$R/keys" ]] && grep -qxF -- "$pw" "$R/keys"; }
@@ -262,6 +263,57 @@ check "MISMATCH (2): the restore still brings the agents back" '[[ $(rc) == 0 ]]
 check "MISMATCH (2): it never claims backups continue" '! grep -q "continue as" "$TMP/out" && grep -q "NOT running" "$TMP/out"'
 check "MISMATCH (2): status and the API both say backups failed" 'jq -e ".ok == false and (.error|test(\"different key\"))" "$FIVE_BACKUP_STATE/status.json" >/dev/null && grep -q "\"ok\":false" "$TMP/curl.body"'
 check "MISMATCH (2): the stranger's repository is left as it was" 'opens_repo box-42 STRANGERKEYSTRANGERKEYSTRAN && ! opens_repo box-42 "$GOOD"'
+
+# --- the owner's own destination: enable --to (lodar 11-07 «customizable») -----------
+# The load-bearing property: that path makes NO request to the 5dive API (no enrol,
+# no report, no listing): the curl stub records every request, so an empty log is
+# the proof. The key, the recovery code, the DM and restore are the cloud path's.
+api_calls() { grep -c . "$TMP/curl.argv" 2>/dev/null || true; }
+reset; MINE="$TMP/w/mine"; run enable --to="$MINE"
+check "TO1 enable --to=<local path> exits 0" '[[ "$(rc)" == 0 ]]'
+check "TO1 ...makes the key on the box and inits the repository there with it" '[[ -n "$(code_on_box)" ]] && opens_repo mine "$(code_on_box)"'
+check "TO1 ...restic is pointed at the owner's path, without R2's region option" 'grep -q "^$MINE .*init" "$TMP/restic.argv" && ! grep -q "s3.region" "$TMP/restic.argv"'
+check "TO1 ...ZERO requests to the 5dive API (no enrol)" '[[ "$(api_calls)" == 0 ]]'
+check "TO1 ...the owner still gets the recovery code by DM, once" '[[ "$(grep -c "chat=1234567890" "$TMP/tg")" == 1 ]]'
+check "TO1 ...the destination is kept root 0600" '[[ "$(stat -c %a "$FIVE_BACKUP_DIR/dest")" == 600 && "$(cat "$FIVE_BACKUP_DIR/dest")" == "$MINE" ]]'
+K=$(code_on_box); run run
+check "TO2 the nightly run backs up to the owner's path" '[[ "$(rc)" == 0 ]] && [[ -s "$TMP/repos/mine/snapshots" ]] && grep -q "^$MINE .*backup" "$TMP/restic.argv"'
+check "TO2 ...excludes the destination itself from the copy" 'grep -q -- "--exclude $MINE" "$TMP/restic.argv"'
+check "TO2 ...and reports nothing to 5dive (zero API requests)" '[[ "$(api_calls)" == 0 ]]'
+check "TO2 ...the status is written on the box" '[[ "$(jq -r .ok "$FIVE_BACKUP_STATE/status.json")" == true ]]'
+rm -f "$FIVE_CONNECTORD_ENV"; run run
+check "TO3 a self-hosted box (no 5dive box identity) still backs up to its own storage" '[[ "$(rc)" == 0 ]] && [[ "$(wc -l <"$TMP/repos/mine/snapshots")" == 2 ]]'
+( JSON_MODE=1; cmd_backup status --json ) >"$TMP/out" 2>&1
+check "TO4 status names the destination" '[[ "$(jq -r .destination "$TMP/out")" == "$MINE" ]]'
+run sources
+check "TO4 sources names the one destination, with no listing call" 'grep -q "$MINE" "$TMP/out" && [[ "$(api_calls)" == 0 ]]'
+
+reset; mkdir -p "$CONNECTORS_DIR"
+printf 'AWS_ACCESS_KEY_ID=OWNERAK\nAWS_SECRET_ACCESS_KEY="OWNERSECRET9"\nEVIL_VAR=x\n' >"$CONNECTORS_DIR/backup.env"
+run enable --to=s3:s3.eu-west-1.amazonaws.com/my-bucket/box
+check "TO5 an s3 destination takes its keys from the box's secret store" '[[ "$(rc)" == 0 ]] && grep -q "ak=OWNERAK sk=OWNERSECRET9" "$TMP/restic.ak"'
+check "TO5 ...the keys never reach restic's argv or any request" '! grep -q OWNERSECRET9 "$TMP/restic.argv" "$TMP/curl.argv" "$TMP/curl.body"'
+check "TO5 ...only restic's own variables are exported" '[[ -z "$(EVIL_VAR=; _bk_dest_env_load s3:x >/dev/null; printf %s "${EVIL_VAR:-}")" ]]'
+check "TO5 ...zero API requests" '[[ "$(api_calls)" == 0 ]]'
+
+reset; run enable --to='rest:https://me:hunter2@backup.example/box'
+check "TO6 a password inside --to refuses (it would sit in argv)" '[[ "$(rc)" == "$E_USAGE" ]] && grep -q "secret write RESTIC_REST_PASSWORD" "$TMP/out" && [[ ! -e "$FIVE_BACKUP_DIR/dest" && -z "$(code_on_box)" ]]'
+reset; run enable --to=relative/dir
+check "TO6 a relative path refuses, nothing written" '[[ "$(rc)" == "$E_USAGE" && ! -e "$FIVE_BACKUP_DIR/dest" ]]'
+reset; run enable --to="/x y"
+check "TO6 a destination with a space refuses" '[[ "$(rc)" == "$E_USAGE" ]]'
+
+GOOD=ABCDEFGHJKLMNPQRSTUVWXYZ2345
+reset; seed mine "$GOOD"; rm -f "$FIVE_CONNECTORD_ENV"; run enable --to="$MINE"
+check "TO7 a fresh box whose destination already holds a backup makes no key and waits for a restore" '[[ "$(rc)" == 0 && -z "$(code_on_box)" ]] && [[ "$(cat "$FIVE_BACKUP_STATE/state")" == restore-available ]] && [[ ! -s "$TMP/tg" ]]'
+reset; seed mine "$GOOD"; rm -f "$FIVE_CONNECTORD_ENV"; run restore --code="$GOOD" --to="$MINE" --yes
+check "TO8 restore --to on a fresh self-hosted box brings the agent back" '[[ "$(rc)" == 0 ]] && grep -q "blue door" "$FIVE_BACKUP_ROOT/home/agent-ava/MEMORY.md"'
+check "TO8 ...the owner's code becomes the box key, backups continue at the same place" '[[ "$(code_on_box)" == "$GOOD" ]] && grep -q "nightly backups continue as $MINE" "$TMP/out"'
+check "TO8 ...zero API requests on the whole restore" '[[ "$(api_calls)" == 0 ]]'
+reset; run restore --code="$GOOD" --to="$MINE" --from=box-7 --yes
+check "TO9 --to with --from refuses" '[[ "$(rc)" == "$E_USAGE" ]]'
+reset; seed box-42 x; run enable
+check "TO10 without --to the box still uses 5dive's storage (enrol called)" 'grep -q "/server/backup/enroll" "$TMP/curl.argv"'
 
 # --- the plugin's host half: setup / uninstall ------------------------------------
 reset; run setup
