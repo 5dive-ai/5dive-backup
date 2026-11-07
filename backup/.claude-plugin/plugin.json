@@ -1,0 +1,45 @@
+{
+  "name": "backup",
+  "version": "1.0.0",
+  "description": "Nightly encrypted backup of a 5dive-hosted server's agents to a second provider. Only the owner holds the key.",
+  "author": {
+    "name": "5dive",
+    "email": "support@5dive.com",
+    "url": "https://5dive.ai"
+  },
+  "homepage": "https://github.com/5dive-ai/5dive-backup",
+  "license": "MIT",
+  "keywords": [
+    "backup",
+    "restore",
+    "restic",
+    "disaster-recovery"
+  ],
+  "fivedive": {
+    "contract": "1",
+    "capabilities": [
+      "verb"
+    ],
+    "verbs": [
+      {
+        "name": "backup",
+        "summary": "nightly encrypted backup of this server's agents; restore one onto a fresh server"
+      }
+    ],
+    "grants": [
+      "network",
+      "fs-home",
+      "agent-credentials",
+      "telegram-token"
+    ],
+    "trust": {
+      "publisher": "5dive",
+      "did": "did:key:5dive",
+      "review": "official"
+    },
+    "setup": {
+      "hint": "Installs restic (a pinned, checksum-verified release) and schedules the nightly backup in /etc/cron.d/5dive-backup. Storage is given to the server by 5dive's API, so this only works on a 5dive-hosted server. The first nightly run makes the key on this server and sends the owner the recovery code by Telegram DM; 5dive never sees it. Undo: sudo 5dive backup uninstall",
+      "command": "sudo 5dive backup setup"
+    }
+  }
+}
