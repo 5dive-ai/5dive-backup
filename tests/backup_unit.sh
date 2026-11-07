@@ -59,6 +59,7 @@ reset() {
   REGISTRY="$TMP/w/state/agents.json"; printf '{"agents":{"ava":{}}}' >"$REGISTRY"
   : >"$TMP/curl.argv"; : >"$TMP/curl.stdin"; : >"$TMP/curl.body"; : >"$TMP/restic.argv"; : >"$TMP/tg"; : >"$TMP/restic.pw"; : >"$TMP/restic.sess"; : >"$TMP/sys"
   export RESTIC_PROBE_RC="" RESTIC_BACKUP_RC=0 RESTIC_SILENT="" LIST_FAIL="" T="$TMP"
+  export FIVE_BACKUP_KEY_TELEGRAM=1   # the DM arms below drive the (now opt-in) Telegram path
   # restic stub: logs the repository + argv and the password it was given, then
   # acts on $T/repos/<repo>/keys (one password per line).
   cat >"$FIVE_BACKUP_RESTIC" <<'EOF'
@@ -567,6 +568,16 @@ check "MANIFEST: the plugin is named after its folder (contract 1)" '[[ "$(jq -r
 check "MANIFEST: the marketplace points at ./backup, one plugin" '[[ "$(jq -r ".plugins|length" .claude-plugin/marketplace.json)" == 1 && "$(jq -r ".plugins[0].source" .claude-plugin/marketplace.json)" == ./backup ]]'
 check "MANIFEST: the verb is backup, and bin/backup is executable" 'jq -e ".fivedive.capabilities|index(\"verb\")" "$M" >/dev/null && [[ "$(jq -r ".fivedive.verbs[0].name" "$M")" == backup && -x "$BIN" ]]'
 check "MANIFEST: setup runs this plugin's own setup verb" '[[ "$(jq -r .fivedive.setup.command "$M")" == "sudo 5dive backup setup" ]]'
+
+# KEY OFF (lodar 2026-11-07 21:47Z, "feels invasive"): with no opt-in, enable and the nightly run
+# send the owner NOTHING, keep the code on the box and leave code-delivered unset.
+reset; unset FIVE_BACKUP_KEY_TELEGRAM; ( cmd_backup enable ) >"$TMP/en.out" 2>&1
+check "KEY OFF: enable sends no Telegram message by default" '[[ -s "$FIVE_BACKUP_DIR/key" && ! -s "$TMP/tg" ]]'
+check "KEY OFF: the code is not marked delivered, so a later channel still delivers it" '[[ ! -e "$FIVE_BACKUP_STATE/code-delivered" ]]'
+check "KEY OFF: enable says the code stays on the box" 'grep -q "stays on this box" "$TMP/en.out"'
+( cmd_backup run ) >/dev/null 2>&1
+check "KEY OFF: the nightly run sends nothing either" '[[ ! -s "$TMP/tg" && ! -e "$FIVE_BACKUP_STATE/code-delivered" ]]'
+export FIVE_BACKUP_KEY_TELEGRAM=1
 
 echo "---"; echo "passed=$PASSED failed=$FAILED"
 (( FAILED == 0 ))

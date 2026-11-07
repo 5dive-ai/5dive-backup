@@ -1,5 +1,13 @@
 # Changes
 
+## 1.0.1 — 2026-11-07 (key message off)
+
+- The recovery code is no longer sent as a Telegram message from the box's bot
+  (lodar: «feels invasive»). It stays on the box (`5dive backup code`), the
+  nightly run sends nothing, and `code-delivered` stays unset. The owner will
+  see it in the app's Settings > Backup. `FIVE_BACKUP_KEY_TELEGRAM=1` turns
+  the old message back on. Arms KEY OFF ×4, mutant m20.
+
 ## 1.0.0 — 2026-11-07 (DIVE-7873)
 
 First release, moved out of the open-source CLI before it ever shipped there

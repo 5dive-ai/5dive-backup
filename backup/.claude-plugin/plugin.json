@@ -1,6 +1,6 @@
 {
   "name": "backup",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Nightly encrypted backup of a 5dive-hosted server's agents to a second provider. Only the owner holds the key.",
   "author": {
     "name": "5dive",

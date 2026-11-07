@@ -515,6 +515,11 @@ EOF
 _bk_deliver_code() {
   local s; s=$(_bk_state)
   [[ -f "$s/code-delivered" ]] && return 0
+  # lodar 2026-11-07 21:47-21:55Z: no bot message to clients ("feels invasive"). The
+  # owner will see the code in the app (Settings > Backup, fetched from this box on
+  # tap). Until then nothing is sent: the code stays on this box (`5dive backup code`
+  # shows it) and code-delivered stays unset. FIVE_BACKUP_KEY_TELEGRAM=1 re-enables the DM.
+  [[ "${FIVE_BACKUP_KEY_TELEGRAM:-0}" == 1 ]] || return 2
   if _bk_owner_dm "$(cat "$(_bk_dir)/key")"; then
     date -u +%FT%TZ >"$s/code-delivered"; return 0
   fi
@@ -582,7 +587,10 @@ cmd_backup_enable() {
   fi
   _bk_cron_install
   echo on >"$s/state"
-  if ! _bk_deliver_code; then
+  local drc=0; _bk_deliver_code || drc=$?
+  if (( drc == 2 )); then
+    echo "backup: the recovery code stays on this box for now (5dive backup code shows it); the owner will see it in the app (Settings > Backup)" >&2
+  elif (( drc != 0 )); then
     echo "backup: the recovery code could not be sent to the owner's Telegram yet; it will be retried every night (5dive backup code shows it)" >&2
   fi
   if (( JSON_MODE )); then jq -cn --arg r "$BK_REPO" '{ok:true, state:"on", repo:$r}'; else echo "backup: on, nightly ($BK_REPO)"; fi
