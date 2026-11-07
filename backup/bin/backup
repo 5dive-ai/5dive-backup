@@ -388,10 +388,61 @@ _bk_agent_bot() {
   [[ "$t" =~ ^[0-9]+:[A-Za-z0-9_-]+$ ]] || return 1
   printf '%s' "$t"
 }
-# <agent> -> the humans paired with its bot (allowFrom), one per line.
+# <agent> -> the OWNER(S) of its bot, one id per line: never everyone it talks to.
+#
+# DIVE-7873 it5 (main, from DIVE-7893's finding): allowFrom is everyone the bot
+# answers, and the Mini App and a partner's cabinet both add guests there (up to
+# 100). The key message says "Only you hold this key", so a guest must never get
+# it. The owners are the telegram plugin's `owners` record (groupjoin.ts
+# nextOwners: the first paired user, plus owner-level pairings), the same set
+# hooks/lib/owners.ts ownerChatIds() reads for "a usage limit or a Connect link
+# is not theirs", kept only while allowFrom still holds them. A bridge that keeps
+# no `owners` record (codex, grok, pi, antigravity) has an owner only when
+# exactly ONE person is paired; with two or more there is no telling who owns
+# it, so nobody gets the key from that bot (the next agent's bot may, and the
+# owner can always read it with `5dive backup code`). ownerChatIds falls back to
+# all of allowFrom there; this does not, because a wrong guess here hands out
+# the key.
 _bk_agent_dms() {
   "$BACKUP_5DIVE_BIN" agent telegram-access get "$1" --json 2>/dev/null \
-    | jq -r '(.data.access.allowFrom // [])[] | tostring' 2>/dev/null
+    | jq -r '
+        (.data.access // {}) as $a
+        | [($a.allowFrom // [])[] | tostring | select(test("^[1-9][0-9]*$"))] as $allow
+        | if ($a.owners | type) == "array"
+          then [$a.owners[] | tostring | select(. as $o | $allow | index($o))]
+          elif ($allow | length) == 1 then $allow
+          else [] end
+        | unique[]' 2>/dev/null
+}
+
+# <agent> -> its Telegram channel's state dir (core's _tg_access_state_dir, same
+# layout), from the agent's type in the registry. rc 1 for a type with none.
+_bk_channel_dir() {
+  local type; type=$(jq -r --arg n "$1" '.agents[$n].type // empty' "$REGISTRY" 2>/dev/null)
+  case "$type" in
+    claude|codex|grok|pi) printf '%s/agent-%s/.%s/channels/telegram' "${BACKUP_HOME_ROOT:-/home}" "$1" "$type" ;;
+    antigravity)          printf '%s/agent-%s/.gemini/channels/telegram' "${BACKUP_HOME_ROOT:-/home}" "$1" ;;
+    *) return 1 ;;
+  esac
+}
+# <agent> -> which key message its owner reads: 5dive | ru | en.
+#
+# DIVE-7893 (lodar approved 2026-11-07 16:30:39Z): a PARTNER's client (OINOA)
+# never reads the platform's name, and reads Russian. A partner seat is the one
+# whose channel .env carries TELEGRAM_ACCOUNT_URL: the API writes the partner's
+# app link there with every token push and never for a 5dive-owned box (core's
+# DIVE-6856 _task_partner_app_url reads the same line as the partner marker).
+# The language is the `lite-lang` file the telegram plugin writes beside
+# access.json from the sender's Telegram language_code (DIVE-5306; core's
+# DIVE-6433 _gate_lang_of_dir reads it the same way). Pick rule (DIVE-7893):
+# Russian, unless that language is known and is not Russian; then English.
+# Every 5dive-owned box gets `5dive`, the text lodar approved at 16:03:18Z.
+_bk_code_variant() {
+  local d v=""
+  d=$(_bk_channel_dir "$1") || { printf 5dive; return 0; }
+  grep -qE '^TELEGRAM_ACCOUNT_URL=.+' "$d/.env" 2>/dev/null || { printf 5dive; return 0; }
+  [[ -r "$d/lite-lang" ]] && v=$(head -c 16 "$d/lite-lang" 2>/dev/null | tr -d '[:space:]')
+  case "${v,,}" in ""|ru*) printf ru ;; *) printf en ;; esac
 }
 # <token> <chat> <thread> <text> -> Telegram's JSON answer on stdout. The text
 # reaches curl from a 0600 file and the token from a 0600 config file, never
@@ -412,12 +463,13 @@ _bk_send() {
   rm -f "$tf" "$cfg"
   return "$rc"
 }
-_bk_owner_dm() {   # <text> — 0 when at least one DM took it
-  local text="$1" name names chat token sent=1
+_bk_owner_dm() {   # <code> — 0 when at least one owner's DM took it
+  local code="$1" text name names chat token sent=1
   names=$(jq -r '.agents // {} | keys[]' "$REGISTRY" 2>/dev/null)
   while IFS= read -r name; do
     [[ -n "$name" ]] || continue
     token=$(_bk_agent_bot "$name") || continue
+    text=$(_bk_code_message "$code" "$(_bk_code_variant "$name")")
     while IFS= read -r chat; do
       [[ "$chat" =~ ^[0-9]+$ ]] || continue   # a positive id is a person; groups are negative
       if _bk_send "$token" "$chat" "" "$text" 2>/dev/null | jq -e '.ok == true' >/dev/null 2>&1; then sent=0; fi
@@ -426,19 +478,44 @@ _bk_owner_dm() {   # <text> — 0 when at least one DM took it
   done <<<"$names"
   return "$sent"
 }
+# <code> [5dive|ru|en]. Each text is the one lodar approved, word for word: 5dive
+# (DIVE-7873 gate, 16:03:18Z) and the partner's ru/en (DIVE-7893 gate,
+# 16:30:39Z, /var/lib/5dive/tasks/gate-quotes/DIVE-7893.md). No platform name
+# and no provider in ru/en: OINOA is the partner's own name, which its clients
+# know.
 _bk_code_message() {
-  cat <<EOF
-Your server's backup key: $(_bk_code_pretty "$1")
+  local k; k=$(_bk_code_pretty "$1")
+  case "${2:-5dive}" in
+    ru) cat <<EOF
+Ключ резервных копий вашего сервера: ${k}
+
+Сохраните его в надёжном месте вне этого чата, например в менеджере паролей. Каждую ночь копия ваших сотрудников шифруется этим ключом и сохраняется в отдельном хранилище.
+
+Ключ есть только у вас. Без него копии не откроет никто, в том числе OINOA. Если пропадут и сервер, и ключ, восстановить сотрудников не сможет никто.
+EOF
+    ;;
+    en) cat <<EOF
+Your server's backup key: ${k}
+
+Save it somewhere safe outside this chat (a password manager). Every night a copy of your employees is encrypted with this key and kept in separate storage.
+
+Only you hold this key. Nobody can open your backups without it, OINOA included. If you lose both the server and this key, nobody can restore them.
+EOF
+    ;;
+    *) cat <<EOF
+Your server's backup key: ${k}
 
 Save it somewhere safe outside this chat (a password manager). Every night your agents are copied, encrypted with this key, to a second provider.
 
 Only you hold this key. 5dive cannot open your backups. If you lose both the server and this key, nobody can restore them, us included.
 EOF
+    ;;
+  esac
 }
 _bk_deliver_code() {
   local s; s=$(_bk_state)
   [[ -f "$s/code-delivered" ]] && return 0
-  if _bk_owner_dm "$(_bk_code_message "$(cat "$(_bk_dir)/key")")"; then
+  if _bk_owner_dm "$(cat "$(_bk_dir)/key")"; then
     date -u +%FT%TZ >"$s/code-delivered"; return 0
   fi
   return 1

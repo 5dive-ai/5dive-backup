@@ -33,3 +33,10 @@ m14() { sed -i 's/prev_ok=\$(jq -r .\.lastOkAt \/\/ empty. "\$s\/status\.json" 2
 m15() { sed -i 's/^  _bk_restore_reown "\$stage" "\$(_bk_root)" ||/  true ||/' "$F"; }
 # m16: the re-own walk ignores the restore's skip list -> it re-owns the new box's identity, UID TAKEN (3) reds.
 m16() { sed -i 's/^        _bk_restore_skipped "\$p\/\$rel" \&\& continue$/        :/' "$F"; }
+# m17-m19 guard it5 (DIVE-7893's finding, and lodar's 16:30:39Z yes to partner servers).
+# m17: the key goes to everyone on allowFrom again, guests included -> OWNER ONLY reds.
+m17() { sed -i 's/^          then \[\$a.owners\[\] | tostring | select(. as \$o | \$allow | index(\$o))\]$/          then $allow/' "$F"; }
+# m18: a partner box gets the 5dive text (no partner pick) -> PICK and PARTNER, delivered red.
+m18() { sed -i "s/^  grep -qE '\^TELEGRAM_ACCOUNT_URL=.+' \"\$d\/.env\" 2>\/dev\/null || { printf 5dive; return 0; }$/  printf 5dive; return 0/" "$F"; }
+# m19: a partner owner whose language is unknown gets English, not Russian -> PICK reds.
+m19() { sed -i 's/^  case "\${v,,}" in ""|ru\*) printf ru ;; \*) printf en ;; esac$/  case "${v,,}" in ru*) printf ru ;; *) printf en ;; esac/' "$F"; }

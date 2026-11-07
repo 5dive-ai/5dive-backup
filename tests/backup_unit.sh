@@ -286,7 +286,98 @@ mkdir -p "$TMP/w/conn"; printf 'TELEGRAM_BOT_TOKEN="123456:AAbb_cc-DD"\n' >"$TMP
 check "BOT: the token is read from core's connector file" '[[ "$( source "$BIN"; CONNECTORS_DIR="$TMP/w/conn"; _bk_agent_bot ava )" == "123456:AAbb_cc-DD" ]]'
 check "BOT: a malformed token, or no file, is no channel" '( source "$BIN"; CONNECTORS_DIR="$TMP/w/conn"; ! _bk_agent_bot eve && ! _bk_agent_bot nobody )'
 printf '#!/usr/bin/env bash\n[[ "$*" == "agent telegram-access get ava --json" ]] && echo %s\n' "'{\"ok\":true,\"data\":{\"access\":{\"allowFrom\":[\"1234567890\",-1005]}}}'" >"$TMP/w/fake5dive"; chmod +x "$TMP/w/fake5dive"
-check "DMS: the paired humans come from core's telegram-access verb" '[[ "$( source "$BIN"; BACKUP_5DIVE_BIN="$TMP/w/fake5dive"; _bk_agent_dms ava | paste -sd, )" == "1234567890,-1005" ]]'
+check "DMS: the owner comes from core's telegram-access verb (one person paired, a group skipped)" '[[ "$( source "$BIN"; BACKUP_5DIVE_BIN="$TMP/w/fake5dive"; _bk_agent_dms ava | paste -sd, )" == "1234567890" ]]'
+
+# --- it5 (DIVE-7893's finding): the key goes to the OWNER, never to a guest ----------
+# fake5dive_access <access json>: core's telegram-access get answers with it for ava.
+fake5dive_access() {
+  printf '#!/usr/bin/env bash\n[[ "$*" == "agent telegram-access get ava --json" ]] && cat <<'"'"'J'"'"'\n{"ok":true,"data":{"access":%s}}\nJ\n' "$1" >"$TMP/w/fake5dive"
+  chmod +x "$TMP/w/fake5dive"
+}
+dms() { ( source "$BIN"; BACKUP_5DIVE_BIN="$TMP/w/fake5dive"; _bk_agent_dms ava | paste -sd, ); }
+fake5dive_access '{"allowFrom":["111","222"],"owners":["111"],"ownersSeed":2}'
+check "OWNER ONLY: allowFrom = owner + guest, the owners record names the owner -> only the owner" '[[ "$(dms)" == "111" ]]'
+fake5dive_access '{"allowFrom":["111","222"],"owners":["333","111"]}'
+check "OWNER ONLY: an owner no longer in allowFrom is dropped (as the telegram plugin ownerChatIds does)" '[[ "$(dms)" == "111" ]]'
+fake5dive_access '{"allowFrom":["111","222"],"owners":[]}'
+check "OWNER ONLY: an empty owners record (owner not paired yet) -> nobody, never the guests" '[[ -z "$(dms)" ]]'
+fake5dive_access '{"allowFrom":["111","222"]}'
+check "OWNER ONLY: no owners record and two people paired -> nobody (no guessing who owns it)" '[[ -z "$(dms)" ]]'
+fake5dive_access '{"allowFrom":["111",-1005]}'
+check "OWNER ONLY: no owners record and ONE person paired -> that person (a group is not a person)" '[[ "$(dms)" == "111" ]]'
+# Through the whole delivery: real _bk_agent_dms, the harness's bot and send stubs.
+fake5dive_access '{"allowFrom":["111","222"],"owners":["111"]}'
+: >"$TMP/tg"
+( source "$BIN"; BACKUP_5DIVE_BIN="$TMP/w/fake5dive"; REGISTRY="$TMP/w/reg.json"; printf '{"agents":{"ava":{"type":"claude"}}}' >"$REGISTRY"
+  _bk_agent_bot() { printf '123:bot'; }; _bk_send() { printf 'chat=%s text=%s\n' "$2" "$4" >>"$TMP/tg"; echo '{"ok":true}'; }
+  _bk_owner_dm ABCDEFGHJKLMNPQRSTUVWXYZ2345 ) >/dev/null 2>&1; echo $? >"$TMP/rc"
+check "OWNER ONLY, delivered: the owner gets the key, the guest on the same bot does not" '[[ $(rc) == 0 ]] && gq "^chat=111 " "$TMP/tg" && ! gq "^chat=222 " "$TMP/tg"'
+fake5dive_access '{"allowFrom":["111","222"]}'
+: >"$TMP/tg"
+( source "$BIN"; BACKUP_5DIVE_BIN="$TMP/w/fake5dive"; REGISTRY="$TMP/w/reg.json"
+  _bk_agent_bot() { printf '123:bot'; }; _bk_send() { printf 'chat=%s\n' "$2" >>"$TMP/tg"; echo '{"ok":true}'; }
+  _bk_owner_dm ABCDEFGHJKLMNPQRSTUVWXYZ2345 ) >/dev/null 2>&1; echo $? >"$TMP/rc"
+check "OWNER ONLY, delivered: no owner known -> nothing sent, rc 1 (retried next night)" '[[ $(rc) == 1 && ! -s "$TMP/tg" ]]'
+
+# --- it5 (DIVE-7893, lodar 16:30:39Z): a partner's client reads its own text ----------
+# The approved texts, from the pinned gate quote: ru = lines 2-6, en = lines 9-13.
+H="$TMP/w/home"; mkdir -p "$H"
+cat >"$TMP/w/q.ru" <<'Q'
+Ключ резервных копий вашего сервера: XXXX-XXXX-…
+
+Сохраните его в надёжном месте вне этого чата, например в менеджере паролей. Каждую ночь копия ваших сотрудников шифруется этим ключом и сохраняется в отдельном хранилище.
+
+Ключ есть только у вас. Без него копии не откроет никто, в том числе OINOA. Если пропадут и сервер, и ключ, восстановить сотрудников не сможет никто.
+Q
+cat >"$TMP/w/q.en" <<'Q'
+Your server's backup key: XXXX-XXXX-…
+
+Save it somewhere safe outside this chat (a password manager). Every night a copy of your employees is encrypted with this key and kept in separate storage.
+
+Only you hold this key. Nobody can open your backups without it, OINOA included. If you lose both the server and this key, nobody can restore them.
+Q
+cat >"$TMP/w/q.5dive" <<'Q'
+Your server's backup key: XXXX-XXXX-…
+
+Save it somewhere safe outside this chat (a password manager). Every night your agents are copied, encrypted with this key, to a second provider.
+
+Only you hold this key. 5dive cannot open your backups. If you lose both the server and this key, nobody can restore them, us included.
+Q
+msg() { ( source "$BIN"; _bk_code_pretty() { printf 'XXXX-XXXX-…'; }; _bk_code_message K "$1" ); }
+check "TEXT: ru is the approved text, word for word" '[[ "$(msg ru)" == "$(cat "$TMP/w/q.ru")" ]]'
+check "TEXT: en is the approved text, word for word" '[[ "$(msg en)" == "$(cat "$TMP/w/q.en")" ]]'
+check "TEXT: 5dive is the 16:03Z text, unchanged" '[[ "$(msg 5dive)" == "$(cat "$TMP/w/q.5dive")" ]]'
+check "TEXT: no variant is the 5dive text" '[[ "$(msg "")" == "$(cat "$TMP/w/q.5dive")" ]]'
+check "TEXT: neither partner text names the platform or the provider" '! msg ru | gq -iE "5dive|cloudflare|r2" && ! msg en | gq -iE "5dive|cloudflare|r2"'
+# chan <type> <env line or ""> <lite-lang or "-">: one agent "ava" of <type>.
+chan() {
+  rm -rf "$H"; local d; case "$1" in antigravity) d="$H/agent-ava/.gemini/channels/telegram" ;; *) d="$H/agent-ava/.$1/channels/telegram" ;; esac
+  mkdir -p "$d"; printf '{"agents":{"ava":{"type":"%s"}}}' "$1" >"$TMP/w/reg.json"
+  [[ -n "$2" ]] && printf '%s\n' "$2" >"$d/.env"
+  [[ "$3" != - ]] && printf '%s' "$3" >"$d/lite-lang"
+  return 0
+}
+variant() { ( source "$BIN"; REGISTRY="$TMP/w/reg.json"; BACKUP_HOME_ROOT="$H"; _bk_code_variant ava ); }
+PURL='TELEGRAM_ACCOUNT_URL=https://t.me/partner_bot/app'
+chan claude "" -;                         check "PICK: a 5dive box (no partner app link) -> the 5dive text" '[[ "$(variant)" == 5dive ]]'
+chan claude "" ru;                        check "PICK: a 5dive box whose owner writes in Russian still gets the approved 5dive text" '[[ "$(variant)" == 5dive ]]'
+chan claude "TELEGRAM_ACCOUNT_URL=" ru;   check "PICK: an EMPTY partner line is not a partner" '[[ "$(variant)" == 5dive ]]'
+chan claude "$PURL" -;                    check "PICK: partner, language unknown -> Russian" '[[ "$(variant)" == ru ]]'
+chan claude "$PURL" "ru";                 check "PICK: partner, ru -> Russian" '[[ "$(variant)" == ru ]]'
+chan claude "$PURL" "ru-RU";              check "PICK: partner, ru-RU -> Russian" '[[ "$(variant)" == ru ]]'
+chan claude "$PURL" "en";                 check "PICK: partner, en -> English" '[[ "$(variant)" == en ]]'
+chan claude "$PURL" "sr";                 check "PICK: partner, sr (known, not Russian) -> English" '[[ "$(variant)" == en ]]'
+chan codex "$PURL" "en";                  check "PICK: a codex seat: its channel dir is read too" '[[ "$(variant)" == en ]]'
+chan antigravity "$PURL" -;               check "PICK: an antigravity seat: its channel dir (.gemini) is read too" '[[ "$(variant)" == ru ]]'
+# Through the whole delivery, on a partner box and on ours.
+dm_text() { : >"$TMP/tg"; ( source "$BIN"; BACKUP_5DIVE_BIN="$TMP/w/fake5dive"; REGISTRY="$TMP/w/reg.json"; BACKUP_HOME_ROOT="$H"
+  _bk_agent_bot() { printf '123:bot'; }; _bk_send() { printf '%s' "$4" >"$TMP/tg"; echo '{"ok":true}'; }
+  _bk_owner_dm ABCDEFGHJKLMNPQRSTUVWXYZ2345 ) >/dev/null 2>&1; cat "$TMP/tg"; }
+fake5dive_access '{"allowFrom":["111"],"owners":["111"]}'
+KP=$( source "$BIN"; _bk_code_pretty ABCDEFGHJKLMNPQRSTUVWXYZ2345 )
+chan claude "$PURL" -;   check "PARTNER, delivered: the owner reads the Russian text with the key" '[[ "$(dm_text)" == "$(sed "s/XXXX-XXXX-…/$KP/" "$TMP/w/q.ru")" ]]'
+chan claude "$PURL" en;  check "PARTNER, delivered: an English-speaking owner reads the English text" '[[ "$(dm_text)" == "$(sed "s/XXXX-XXXX-…/$KP/" "$TMP/w/q.en")" ]]'
+chan claude "" -;        check "5DIVE BOX, delivered: unchanged, the 5dive text with the key" '[[ "$(dm_text)" == "$(sed "s/XXXX-XXXX-…/$KP/" "$TMP/w/q.5dive")" ]]'
 check "NO CORE INTERNALS: the plugin calls none of core's in-process functions" '! grep -nE "_mirror_send|_task_agent_channel|TASK_CH_|_disk_alarm_deliver\(" "$BIN" | grep -v "^[0-9]*:#"'
 
 # --- the executable, as core's dispatcher runs it ---------------------------------
