@@ -41,6 +41,9 @@ PASSED=0; FAILED=0
 pass() { PASSED=$((PASSED+1)); printf 'ok   — %s\n' "$1"; }
 bad()  { FAILED=$((FAILED+1)); printf 'FAIL — %s\n' "$1"; }
 check() { if eval "$2"; then pass "$1"; else bad "$1"; fi; }
+# grep -q in a pipe exits at the first match, the writer can die of SIGPIPE, and
+# under pipefail the arm flakes red: gq reads the whole stream.
+gq() { grep "$@" >/dev/null; }
 
 # The agent unit's drop-in dir, built so no literal name-at-host string sits here.
 export UNIT_D="5dive-agent$(printf '\x40')ava.service.d" UNIT_S="5dive-agent$(printf '\x40')ava.service"
@@ -203,7 +206,7 @@ export RESTIC_BACKUP_RC=1; : >"$TMP/curl.body"; run run
 check "FAILED run: non-zero exit" '[[ $(rc) != 0 ]]'
 check "FAILED run: status.json says so and keeps the last good time" 'jq -e ".ok == false and (.error|test(\"rc 1\")) and .lastOkAt != null" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
 check "FAILED run: reported to the API as not ok" 'grep -q "\"ok\":false" "$TMP/curl.body"'
-check "FAILED run: status says FAILED" '( cmd_backup status ) 2>&1 | grep -q "FAILED"'
+check "FAILED run: status says FAILED" '( cmd_backup status ) 2>&1 | gq "FAILED"'
 check "FAILED run (4): the error is restic's own stderr of this run" 'jq -e ".error|test(\"Fatal: unable to open repo\")" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
 export RESTIC_BACKUP_RC=0; ( cmd_backup run ) >/dev/null 2>&1; export RESTIC_BACKUP_RC=1 RESTIC_SILENT=1; run run
 check "FAILED run (4): a silent restic never borrows an older log line" 'jq -e "(.error|test(\"run ok=\")|not) and (.error|test(\"printed no error\"))" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
@@ -288,13 +291,13 @@ check "NO CORE INTERNALS: the plugin calls none of core's in-process functions" 
 
 # --- the executable, as core's dispatcher runs it ---------------------------------
 check "ENTRY: sourcing runs nothing" '[[ -z "$( bash -c "source $BIN" 2>&1 )" ]]'
-check "ENTRY: --help prints the usage, rc 0" 'bash "$BIN" --help | grep -q "^usage: 5dive backup"'
+check "ENTRY: --help prints the usage, rc 0" 'bash "$BIN" --help | gq "^usage: 5dive backup"'
 check "ENTRY: an unknown command is rc 2" 'bash "$BIN" bogus >/dev/null 2>&1; [[ $? == 2 ]]'
 check "ENTRY: --json mode (forwarded by core as FIVEDIVE_JSON_MODE) fails as JSON" '[[ "$(FIVEDIVE_JSON_MODE=1 bash "$BIN" bogus 2>/dev/null | jq -r ".ok, .error.code" | paste -sd,)" == "false,2" ]]'
 if [[ $EUID -ne 0 ]]; then
   check "ENTRY: a root verb refuses a non-root caller with core's E_PERMISSION (10)" 'bash "$BIN" run >/dev/null 2>&1; [[ $? == 10 ]]'
 fi
-check "ENTRY: status needs no root and says off on a box never set up" 'FIVE_BACKUP_STATE="$TMP/none" FIVE_BACKUP_CRON="$TMP/none/c" FIVE_BACKUP_DIR="$TMP/none" bash "$BIN" status | grep -q "^backup: off"'
+check "ENTRY: status needs no root and says off on a box never set up" 'FIVE_BACKUP_STATE="$TMP/none" FIVE_BACKUP_CRON="$TMP/none/c" FIVE_BACKUP_DIR="$TMP/none" bash "$BIN" status | gq "^backup: off"'
 
 # --- restic install on a stock Ubuntu 24.04 box (drill defect 1) -------------------
 # The drill's setup died on `bunzip2: command not found` on 3 of 3 stock boxes.
@@ -331,9 +334,9 @@ install_arm() {   # <PATH> <asset> -> rc of the real _bk_restic_install
 }
 command -v python3 >/dev/null || bad "INSTALL: python3 is needed to build the arms"
 reset; rm -f "$FIVE_BACKUP_RESTIC"; install_arm "$TMP/p-py" "$FAKEBZ"; r=$?
-check "INSTALL (1): no bzip2 on the box: restic is installed anyway (rc 0) and runs as 0.17.3" '[[ $r == 0 ]] && "$FIVE_BACKUP_RESTIC" version | grep -q "^restic 0.17.3 "'
+check "INSTALL (1): no bzip2 on the box: restic is installed anyway (rc 0) and runs as 0.17.3" '[[ $r == 0 ]] && "$FIVE_BACKUP_RESTIC" version | gq "^restic 0.17.3 "'
 reset; rm -f "$FIVE_BACKUP_RESTIC"; : >"$TMP/apt.log"; install_arm "$TMP/p-bare" "$FAKEBZ"; r=$?
-check "INSTALL (1): no bzip2 and no python3: bzip2 comes from apt, then restic installs" '[[ -n "$REALBZ" && $r == 0 ]] && grep -q "install .*bzip2" "$TMP/apt.log" && "$FIVE_BACKUP_RESTIC" version | grep -q "^restic 0.17.3 "'
+check "INSTALL (1): no bzip2 and no python3: bzip2 comes from apt, then restic installs" '[[ -n "$REALBZ" && $r == 0 ]] && grep -q "install .*bzip2" "$TMP/apt.log" && "$FIVE_BACKUP_RESTIC" version | gq "^restic 0.17.3 "'
 rm -f "$TMP/p-bare/bunzip2"
 reset; rm -f "$FIVE_BACKUP_RESTIC"; install_arm "$TMP/p-py" "$TMP/old.bz2"; r=$?
 check "INSTALL: a binary that is not the pinned version is refused and removed" '[[ $r != 0 && ! -e "$FIVE_BACKUP_RESTIC" ]]'
@@ -414,14 +417,14 @@ xrun() {   # bash bin/backup <verb...> as core runs it; rc in $TMP/rc
     ENROLL_BODY="$ENROLL_BODY" ENROLL_HTTP="$ENROLL_HTTP" STAGE_UID="${STAGE_UID:-1007}" STAGE_GID="${STAGE_GID:-1007}" \
     bash "$BIN" "$@" >"$TMP/out" 2>&1; echo $? >"$TMP/rc"
 }
-check "EXECUTED: the file still runs under core's errexit (the trailer is there)" 'tail -n 6 "$BIN" | grep -q "set -euo pipefail"'
+check "EXECUTED: the file still runs under core's errexit (the trailer is there)" 'tail -n 6 "$BIN" | gq "set -euo pipefail"'
 
 xreset; xrun setup
 check "EXECUTED setup: rc 0, scheduled" '[[ $(rc) == 0 && -f "$FIVE_BACKUP_CRON" ]] || { cat "$TMP/out"; false; }'
 xreset; xrun run
 check "EXECUTED (2): the FIRST run on a never-set-up box (no status.json) exits 0" '[[ $(rc) == 0 && ! -e "$FIVE_BACKUP_STATE/status.json.tmp" ]] || { cat "$TMP/out"; false; }'
 check "EXECUTED (2): it records the run in status.json" 'jq -e ".ok == true and .snapshot == \"abc123\" and .lastOkAt != null" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
-check "EXECUTED (2): it reports the run to the API (ok, with the snapshot)" 'grep "\"snapshot\":\"abc123\"" "$TMP/curl.body" | grep -q "\"ok\":true"'
+check "EXECUTED (2): it reports the run to the API (ok, with the snapshot)" 'grep "\"snapshot\":\"abc123\"" "$TMP/curl.body" | gq "\"ok\":true"'
 check "EXECUTED: the first run made the key and DMed the owner its code, once" '[[ -s "$FIVE_BACKUP_DIR/key" && $(grep -c "^chat=1234567890 " "$TMP/tg") == 1 ]] && grep -q "$(_bk_code_pretty "$(code_on_box)")" "$TMP/tg"'
 check "EXECUTED CUSTODY: the code is in no API body, header or argv" 'K=$(code_on_box); ! grep -q "$K" "$TMP/curl.argv" "$TMP/curl.body" "$TMP/curl.stdin"'
 xrun status
