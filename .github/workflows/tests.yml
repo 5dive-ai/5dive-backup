@@ -1,0 +1,23 @@
+name: tests
+
+# DIVE-7873. No root, network or box: restic, curl, Telegram, systemd and the
+# user tools are stubs and every path is redirected into a temp dir. The
+# negative controls then break one guard at a time and require the suite red.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: shellcheck
+        run: shellcheck -S warning backup/bin/backup tests/*.sh
+      - name: manifests are valid JSON
+        run: jq -e . backup/.claude-plugin/plugin.json .claude-plugin/marketplace.json >/dev/null
+      - name: harness
+        run: bash tests/backup_unit.sh
+      - name: negative controls
+        run: bash tests/negative-controls.sh
