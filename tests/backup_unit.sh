@@ -344,6 +344,7 @@ Save it somewhere safe outside this chat (a password manager). Every night your 
 
 Only you hold this key. 5dive cannot open your backups. If you lose both the server and this key, nobody can restore them, us included.
 Q
+cp "$TMP"/w/q.* "$TMP/"   # kept for the APP arms: reset clears $TMP/w
 msg() { ( source "$BIN"; _bk_code_pretty() { printf 'XXXX-XXXX-…'; }; _bk_code_message K "$1" ); }
 check "TEXT: ru is the approved text, word for word" '[[ "$(msg ru)" == "$(cat "$TMP/w/q.ru")" ]]'
 check "TEXT: en is the approved text, word for word" '[[ "$(msg en)" == "$(cat "$TMP/w/q.en")" ]]'
@@ -578,6 +579,28 @@ check "KEY OFF: enable says the code stays on the box" 'grep -q "stays on this b
 ( cmd_backup run ) >/dev/null 2>&1
 check "KEY OFF: the nightly run sends nothing either" '[[ ! -s "$TMP/tg" && ! -e "$FIVE_BACKUP_STATE/code-delivered" ]]'
 export FIVE_BACKUP_KEY_TELEGRAM=1
+
+# APP (DIVE-7899, lodar 2026-11-07 21:55Z): the owner reads the code in the app, on a tap. The API
+# runs `code --json --seen`; the answer carries the approved warning, and --seen ends every other channel.
+reset; unset FIVE_BACKUP_KEY_TELEGRAM; ( cmd_backup enable ) >/dev/null 2>&1
+( cmd_backup code --json ) >"$TMP/app.out" 2>&1
+check "APP: code --json answers {ok, code, lang 5dive, the approved 5dive warning}" 'jq -e --arg c "$(_bk_code_pretty "$(code_on_box)")" --arg w "$(tail -n 1 "$TMP/q.5dive")" ".ok == true and .code == \$c and .lang == \"5dive\" and .warning == \$w" "$TMP/app.out" >/dev/null'
+check "APP: a read without --seen leaves the code undelivered" '[[ ! -e "$FIVE_BACKUP_STATE/code-delivered" ]]'
+( cmd_backup code --json --seen ) >"$TMP/app.out" 2>&1
+check "APP: --seen marks the code delivered and still answers it" '[[ -s "$FIVE_BACKUP_STATE/code-delivered" ]] && jq -e ".ok == true" "$TMP/app.out" >/dev/null'
+export FIVE_BACKUP_KEY_TELEGRAM=1; ( cmd_backup run ) >/dev/null 2>&1
+check "APP: once seen, the nightly run never sends it on another channel (even opted in)" '[[ ! -s "$TMP/tg" ]]'
+( cmd_backup code --bogus ) >"$TMP/app.out" 2>&1; echo $? >"$TMP/rc"
+check "APP: an unknown flag refuses with the usage code" '[[ $(rc) == 2 ]]'
+rm -f "$FIVE_BACKUP_DIR/key"; ( cmd_backup code --json --seen ) >"$TMP/app.out" 2>&1; echo $? >"$TMP/rc"
+check "APP: no key -> a JSON not-found error (rc 4), no code" '[[ $(rc) == 4 ]] && jq -e ".ok == false and .error.code == 4" "$TMP/app.out" >/dev/null'
+# The variant the app reads: a partner seat anywhere on the box gives the partner's text.
+boxv() { ( source "$BIN"; REGISTRY="$TMP/w/reg.json"; BACKUP_HOME_ROOT="$H"; _bk_box_variant ); }
+warnv() { ( source "$BIN"; _bk_code_warning "$1" ); }
+chan claude "" -;      check "APP: a 5dive box -> the 5dive variant" '[[ "$(boxv)" == 5dive ]]'
+chan claude "$PURL" -; check "APP: a partner box -> Russian" '[[ "$(boxv)" == ru ]]'
+chan codex "$PURL" en; check "APP: a partner box, English owner -> English" '[[ "$(boxv)" == en ]]'
+check "APP: each warning is the approved text's last paragraph, word for word" '[[ "$(warnv 5dive)" == "$(tail -n 1 "$TMP/q.5dive")" && "$(warnv ru)" == "$(tail -n 1 "$TMP/q.ru")" && "$(warnv en)" == "$(tail -n 1 "$TMP/q.en")" ]]'
 
 echo "---"; echo "passed=$PASSED failed=$FAILED"
 (( FAILED == 0 ))
