@@ -72,7 +72,10 @@ fail() {
 }
 warn() { echo "warn: $*" >&2 || true; }
 require_root() {
-  [[ $EUID -eq 0 ]] || fail "$E_PERMISSION" "must run as root (sudo 5dive backup ${FIVEDIVE_BACKUP_SUB:-})"
+  # FIVE_BACKUP_EUID: the harness's seam, so its arms can EXECUTE this file as
+  # core does instead of sourcing it. It grants nothing: every file a root verb
+  # touches on a box is root's.
+  [[ "${FIVE_BACKUP_EUID:-$EUID}" == 0 ]] || fail "$E_PERMISSION" "must run as root (sudo 5dive backup ${FIVEDIVE_BACKUP_SUB:-})"
 }
 
 # Core's five_api_base (src/header.sh, DIVE-7558): the root-owned file wins over
@@ -225,16 +228,34 @@ _bk_write0600() {   # <path> <content>
 
 # ---- restic -------------------------------------------------------------------
 
+_bk_restic_ok() { [[ -x "$1" && "$("$1" version 2>/dev/null)" == "restic ${BACKUP_RESTIC_VERSION} "* ]]; }
+# <file.bz2> <out>. restic ships Linux builds as .bz2 only, and a stock Ubuntu
+# 24.04 server (Hetzner, OVH, the cloud image) has NO bzip2: the drill's setup
+# died on `bunzip2: command not found` on 3 of 3 boxes. python3 (always there:
+# cloud-init and netplan need it) decompresses it; bzip2 from apt is the last
+# resort.
+_bk_bunzip() {
+  if command -v bunzip2 >/dev/null 2>&1; then bunzip2 -c "$1" >"$2" && return 0; fi
+  if command -v python3 >/dev/null 2>&1; then
+    python3 -c 'import bz2,shutil,sys
+with bz2.open(sys.argv[1],"rb") as i, open(sys.argv[2],"wb") as o: shutil.copyfileobj(i,o)' "$1" "$2" && return 0
+  fi
+  { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq bzip2; } >/dev/null 2>&1 || return 1
+  command -v bunzip2 >/dev/null 2>&1 && bunzip2 -c "$1" >"$2"
+}
 _bk_restic_install() {
   local bin arch sum tmp; bin=$(_bk_restic)
-  if [[ -x "$bin" ]] && "$bin" version 2>/dev/null | grep -q "restic ${BACKUP_RESTIC_VERSION} "; then return 0; fi
+  _bk_restic_ok "$bin" && return 0
   case "$(uname -m)" in x86_64) arch=amd64 ;; aarch64|arm64) arch=arm64 ;; *) return 1 ;; esac
   sum="${BACKUP_RESTIC_SHA256[$arch]}"
   tmp=$(mktemp -d) || return 1
+  # The binary counts as installed only once it runs and says it is the pinned
+  # version: a half-written or wrong file is removed, never left to fail later.
   if curl -fsSL --max-time 120 -o "$tmp/r.bz2" \
        "https://github.com/restic/restic/releases/download/v${BACKUP_RESTIC_VERSION}/restic_${BACKUP_RESTIC_VERSION}_linux_${arch}.bz2" \
      && [[ "$(sha256sum "$tmp/r.bz2" | awk '{print $1}')" == "$sum" ]] \
-     && bunzip2 -f "$tmp/r.bz2" && install -m 0755 "$tmp/r" "$bin"; then
+     && _bk_bunzip "$tmp/r.bz2" "$tmp/r" && install -m 0755 "$tmp/r" "$bin" \
+     && { _bk_restic_ok "$bin" || { rm -f "$bin"; false; }; }; then
     rm -rf "$tmp"; return 0
   fi
   rm -rf "$tmp"; return 1
@@ -309,7 +330,10 @@ _bk_report() {   # <ok true|false> <error> <bytes> <snapshot>
 
 _bk_status_write() {   # <ok> <error> <bytes> <snapshot>
   local s; s=$(_bk_state); mkdir -p "$s"
-  local prev_ok; prev_ok=$(jq -r '.lastOkAt // empty' "$s/status.json" 2>/dev/null)
+  # The FIRST run has no status.json: jq exits 2 on the missing file, and under
+  # the entry trailer's errexit that killed every run before it could record or
+  # report anything (the drill: every `backup run` rc 2, nothing reported).
+  local prev_ok=""; prev_ok=$(jq -r '.lastOkAt // empty' "$s/status.json" 2>/dev/null) || prev_ok=""
   local now; now=$(date -u +%FT%TZ)
   jq -n --argjson ok "$1" --arg e "$2" --arg b "$3" --arg sn "$4" --arg now "$now" --arg prev "$prev_ok" \
     '{lastRunAt:$now, ok:$ok, lastOkAt:(if $ok then $now elif $prev=="" then null else $prev end),
@@ -585,10 +609,15 @@ cmd_backup_sources() {
 
 # ---- restore --------------------------------------------------------------------
 
+# The old box's uid/gid -> this box's, for every restored user whose number
+# changed (filled by _bk_restore_users, applied by _bk_restore_reown).
+declare -A BK_UIDMAP=() BK_GIDMAP=()
 _bk_restore_users() {   # <users.tsv>
-  local n uid gid gname home shell groups g
+  local n uid gid gname home shell groups g now
   while IFS=$'\t' read -r n uid gid gname home shell groups; do
     [[ "$n" =~ ^(claude|agent-[a-z0-9-]+)$ && "$uid" =~ ^[0-9]+$ && "$gid" =~ ^[0-9]+$ ]] || continue
+    # Only the agent uid range the manifest is made from, never root's group.
+    (( uid >= 1000 && gid > 0 )) || continue
     if ! getent group "$gname" >/dev/null; then
       groupadd -g "$gid" "$gname" 2>/dev/null || groupadd "$gname" 2>/dev/null || true
     fi
@@ -605,7 +634,50 @@ _bk_restore_users() {   # <users.tsv>
       getent group "$g" >/dev/null || groupadd "$g" 2>/dev/null || true
       usermod -aG "$g" "$n" 2>/dev/null || true
     done
+    now=$(getent passwd "$n" 2>/dev/null | cut -d: -f3) || now=""
+    [[ "$now" =~ ^[0-9]+$ && "$now" != "$uid" ]] && BK_UIDMAP[$uid]=$now
+    now=$(getent group "$gname" 2>/dev/null | cut -d: -f3) || now=""
+    [[ "$now" =~ ^[0-9]+$ && "$now" != "$gid" ]] && BK_GIDMAP[$gid]=$now
   done <"$1"
+  return 0
+}
+
+# rsync --numeric-ids puts back the OLD box's numbers. Where a user came back
+# under a new uid (the old one is taken here: OVH's and most cloud images'
+# `ubuntu` is uid 1000, and so is the first agent on a 5dive box) its files
+# would belong to whoever holds the old number here: the drill found all 1888
+# files of the agent's home owned by `ubuntu`, and the agent could not write it.
+# Walk the STAGED copy, which still carries the old numbers, and re-own exactly
+# the files the restore put in place, so nothing the fresh box had of its own
+# is touched, and a chain (old 1000 -> 1001, old 1001 -> 1002) maps each file once.
+# A path the restore never copies (BACKUP_RESTORE_SKIP): the new box's own.
+_bk_restore_skipped() {   # </abs/path>
+  local q; for q in "${BACKUP_RESTORE_SKIP[@]}"; do [[ "$1" == "$q" || "$1" == "$q"/* ]] && return 0; done
+  return 1
+}
+_bk_restore_reown() {   # <stage> <root>
+  local stage="$1" root="${2:-}" p o rel t
+  (( ${#BK_UIDMAP[@]} + ${#BK_GIDMAP[@]} )) || return 0
+  local set=(/home /var/lib/5dive /etc/5dive /etc/claude-code /etc/sudoers.d /var/spool/cron/crontabs)
+  for p in "${set[@]}"; do
+    [[ -e "$stage$p" ]] || continue
+    for o in "${!BK_UIDMAP[@]}"; do
+      while IFS= read -r -d '' rel; do
+        t="$root$p/$rel"; [[ "$rel" == . ]] && t="$root$p"
+        _bk_restore_skipped "$p/$rel" && continue
+        [[ -e "$t" || -L "$t" ]] && [[ "$(stat -c %u "$t")" == "$o" ]] || continue
+        chown -h "${BK_UIDMAP[$o]}" "$t" || return 1
+      done < <(find "$stage$p" -uid "$o" -printf '%P\0' | sed -z 's/^$/./')
+    done
+    for o in "${!BK_GIDMAP[@]}"; do
+      while IFS= read -r -d '' rel; do
+        t="$root$p/$rel"; [[ "$rel" == . ]] && t="$root$p"
+        _bk_restore_skipped "$p/$rel" && continue
+        [[ -e "$t" || -L "$t" ]] && [[ "$(stat -c %g "$t")" == "$o" ]] || continue
+        chgrp -h "${BK_GIDMAP[$o]}" "$t" || return 1
+      done < <(find "$stage$p" -gid "$o" -printf '%P\0' | sed -z 's/^$/./')
+    done
+  done
 }
 
 # What comes back, from a staged restore at <stage>, onto <root>/.
@@ -675,6 +747,7 @@ cmd_backup_restore() {
   mapfile -t names < <(jq -r '.agents // {} | keys[]' "$stage/var/lib/5dive/agents.json" 2>/dev/null)
   for n in "${names[@]}"; do systemctl stop "5dive-agent@${n}.service" >/dev/null 2>&1 || true; done
   _bk_restore_apply "$stage" "$(_bk_root)" || { rm -f "$pw"; fail "$E_GENERIC" "copying the restored files into place failed; the staged copy is at $stage"; }
+  _bk_restore_reown "$stage" "$(_bk_root)" || { rm -f "$pw"; fail "$E_GENERIC" "the restored files could not be given back to their users (uid changed on this box); the staged copy is at $stage"; }
   # The restored key becomes this box's key: later backups use the owner's code.
   # Back up from here on: into THIS box's own repository, opened by the owner's
   # code. If that place already holds a repository under another key (one this

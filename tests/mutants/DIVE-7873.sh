@@ -23,3 +23,13 @@ m7() { sed -i 's/\[\[ "\$chat" =~ \^\[0-9\]+\$ \]\] || continue   # a positive i
 m8() { sed -i 's/  if \[\[ ! -f "\$c" \]\]; then/  if true; then/' "$F"; }
 # m9: the bot token rides curl's argv again -> SEND reds.
 m9() { sed -i 's#  curl -s --connect-timeout 5 --max-time 10 -X POST -K "\$cfg"#  curl -s --connect-timeout 5 --max-time 10 -X POST "https://api.telegram.org/bot${token}/sendMessage"#' "$F"; }
+# m13-m16 guard the it4 drill fixes (main's fresh-box drill, 11-07). m10-m12 are
+# taken by the custom-destination branch stacked on this one.
+# m13: restic is decompressed with bunzip2 only again -> INSTALL (1) reds (stock Ubuntu has no bzip2).
+m13() { sed -i 's/^  if command -v bunzip2 >\/dev\/null 2>&1; then bunzip2 -c "\$1" >"\$2" \&\& return 0; fi$/  bunzip2 -c "$1" >"$2"; return/' "$F"; }
+# m14: the first run's status read dies on the missing status.json under errexit -> EXECUTED (2) reds.
+m14() { sed -i 's/prev_ok=\$(jq -r .\.lastOkAt \/\/ empty. "\$s\/status\.json" 2>\/dev\/null) || prev_ok=""/prev_ok=$(jq -r ".lastOkAt \/\/ empty" "$s\/status.json" 2>\/dev\/null)/' "$F"; }
+# m15: a restore never re-owns files whose uid changed -> UID TAKEN (3) reds.
+m15() { sed -i 's/^  _bk_restore_reown "\$stage" "\$(_bk_root)" ||/  true ||/' "$F"; }
+# m16: the re-own walk ignores the restore's skip list -> it re-owns the new box's identity, UID TAKEN (3) reds.
+m16() { sed -i 's/^        _bk_restore_skipped "\$p\/\$rel" \&\& continue$/        :/' "$F"; }

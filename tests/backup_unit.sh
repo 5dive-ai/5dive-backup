@@ -67,6 +67,7 @@ opens() { [[ -f "$R/keys" ]] && grep -qxF -- "$pw" "$R/keys"; }
 kid() { printf '%s' "$1" | sha256sum | cut -c1-64; }
 argafter() { local p="" a; for a in "${@:2}"; do [[ "$p" == "$1" ]] && { printf '%s' "$a"; return; }; p="$a"; done; }
 case " $* " in
+  *" version "*) echo "restic 0.17.3 compiled with go1.23.3 on linux/amd64"; exit 0 ;;
   *" cat config"*) [[ -n "${RESTIC_PROBE_RC:-}" ]] && exit "$RESTIC_PROBE_RC"
      [[ -d "$R" ]] || exit 10; opens && exit 0; exit 12 ;;
   *" init"*) [[ -d "$R" ]] && { echo "Fatal: config file already exists" >&2; exit 1; }
@@ -84,7 +85,7 @@ case " $* " in
      mkdir -p "$t/home/agent-ava" "$t/var/lib/5dive" "$t/etc/5dive/connectors" "$t/etc/systemd/system/$UNIT_D"
      echo "remembers: the blue door" >"$t/home/agent-ava/MEMORY.md"
      printf '{"agents":{"ava":{}}}' >"$t/var/lib/5dive/agents.json"
-     printf 'agent-ava\t1007\t1007\tagent-ava\t/home/agent-ava\t/bin/bash\tagent-ava,claude\n' >"$t/var/lib/5dive/backup-users.tsv"
+     printf 'agent-ava\t%s\t%s\tagent-ava\t/home/agent-ava\t/bin/bash\tagent-ava,claude\n' "${STAGE_UID:-1007}" "${STAGE_GID:-1007}" >"$t/var/lib/5dive/backup-users.tsv"
      # A different LENGTH from the new box's token, so rsync's size+mtime check
      # can never skip it by coincidence: the IDENTITY arm is deterministic.
      echo "CONNECTORD_TOKEN=OLD_BOX_IDENTITY_FROM_THE_BACKUP" >"$t/etc/5dive/connectord.env"
@@ -294,6 +295,177 @@ if [[ $EUID -ne 0 ]]; then
   check "ENTRY: a root verb refuses a non-root caller with core's E_PERMISSION (10)" 'bash "$BIN" run >/dev/null 2>&1; [[ $? == 10 ]]'
 fi
 check "ENTRY: status needs no root and says off on a box never set up" 'FIVE_BACKUP_STATE="$TMP/none" FIVE_BACKUP_CRON="$TMP/none/c" FIVE_BACKUP_DIR="$TMP/none" bash "$BIN" status | grep -q "^backup: off"'
+
+# --- restic install on a stock Ubuntu 24.04 box (drill defect 1) -------------------
+# The drill's setup died on `bunzip2: command not found` on 3 of 3 stock boxes.
+# These arms run the REAL installer (the harness stubs it everywhere else) with a
+# PATH that has no bzip2 at all, against a .bz2 the curl stub serves as the
+# release asset and whose sha256 is pinned for the arm.
+nobz() {   # <dir> <names to leave out...>: every tool on PATH except those
+  local d="$1" x n; shift; mkdir -p "$d"
+  for x in /usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin; do
+    for n in "$x"/*; do
+      [[ -x "$n" && ! -e "$d/${n##*/}" ]] || continue
+      case " $* " in *" ${n##*/} "*) continue ;; esac
+      ln -s "$n" "$d/${n##*/}"
+    done
+  done
+}
+FAKEBZ="$TMP/restic.bz2"
+printf '#!/bin/sh\necho "restic 0.17.3 compiled with go1.23.3 on linux/amd64"\n' >"$TMP/fake-restic"
+python3 -c 'import bz2,sys; open(sys.argv[2],"wb").write(bz2.compress(open(sys.argv[1],"rb").read()))' "$TMP/fake-restic" "$FAKEBZ"
+printf '#!/bin/sh\necho "restic 0.16.0 compiled with go1.21 on linux/amd64"\n' >"$TMP/old-restic"
+python3 -c 'import bz2,sys; open(sys.argv[2],"wb").write(bz2.compress(open(sys.argv[1],"rb").read()))' "$TMP/old-restic" "$TMP/old.bz2"
+BZ_NONE=(bunzip2 bzip2 bzcat bzip2recover)
+nobz "$TMP/p-py" "${BZ_NONE[@]}" apt-get
+nobz "$TMP/p-bare" "${BZ_NONE[@]}" apt-get python3 python3.12 python3.11 python3.10 python
+# apt-get stub for the bare box: "installs" bzip2 by putting the real one on PATH.
+REALBZ=$(command -v bunzip2 || true)
+printf '#!/bin/sh\necho "apt-get $*" >>"%s/apt.log"\ncase "$*" in *install*bzip2*) ln -sf "%s" "%s/bunzip2" ;; esac\nexit 0\n' "$TMP" "$REALBZ" "$TMP/p-bare" >"$TMP/p-bare/apt-get"; chmod +x "$TMP/p-bare/apt-get"
+install_arm() {   # <PATH> <asset> -> rc of the real _bk_restic_install
+  ( source "$BIN"; set +e
+    BACKUP_RESTIC_SHA256[amd64]=$(sha256sum "$2" | cut -d' ' -f1); BACKUP_RESTIC_SHA256[arm64]=${BACKUP_RESTIC_SHA256[amd64]}
+    curl() { local o="" p="" a; for a in "$@"; do [[ "$p" == -o ]] && o="$a"; p="$a"; done
+      [[ "$*" == *github.com/restic/restic/releases/download/v0.17.3/* ]] && cp "$ASSET" "$o"; }
+    ASSET="$2" PATH="$1" _bk_restic_install ) >/dev/null 2>&1
+}
+command -v python3 >/dev/null || bad "INSTALL: python3 is needed to build the arms"
+reset; rm -f "$FIVE_BACKUP_RESTIC"; install_arm "$TMP/p-py" "$FAKEBZ"; r=$?
+check "INSTALL (1): no bzip2 on the box: restic is installed anyway (rc 0) and runs as 0.17.3" '[[ $r == 0 ]] && "$FIVE_BACKUP_RESTIC" version | grep -q "^restic 0.17.3 "'
+reset; rm -f "$FIVE_BACKUP_RESTIC"; : >"$TMP/apt.log"; install_arm "$TMP/p-bare" "$FAKEBZ"; r=$?
+check "INSTALL (1): no bzip2 and no python3: bzip2 comes from apt, then restic installs" '[[ -n "$REALBZ" && $r == 0 ]] && grep -q "install .*bzip2" "$TMP/apt.log" && "$FIVE_BACKUP_RESTIC" version | grep -q "^restic 0.17.3 "'
+rm -f "$TMP/p-bare/bunzip2"
+reset; rm -f "$FIVE_BACKUP_RESTIC"; install_arm "$TMP/p-py" "$TMP/old.bz2"; r=$?
+check "INSTALL: a binary that is not the pinned version is refused and removed" '[[ $r != 0 && ! -e "$FIVE_BACKUP_RESTIC" ]]'
+reset; rm -f "$FIVE_BACKUP_RESTIC"
+r=$( ( source "$BIN"; set +e; BACKUP_RESTIC_SHA256[amd64]=00; BACKUP_RESTIC_SHA256[arm64]=00
+       curl() { local o="" p="" a; for a in "$@"; do [[ "$p" == -o ]] && o="$a"; p="$a"; done; cp "$FAKEBZ" "$o"; }
+       _bk_restic_install >/dev/null 2>&1; echo $? ) )
+check "INSTALL: a download whose sha256 is not the pinned one is never installed" '[[ $r != 0 && ! -e "$FIVE_BACKUP_RESTIC" ]]'
+
+# --- EXECUTED: bin/backup run the way core runs it (drill defects 2 and 3) ---------
+# Everything above SOURCES the file, so it never ran under the entry trailer's
+# `set -euo pipefail`; that is how every `backup run` on a real box exited 2
+# with 89/89 green here. These arms EXECUTE it: `bash backup/bin/backup <verb>`
+# in a child process, the stubs are programs on PATH, not shell functions, and
+# FIVE_BACKUP_EUID stands in for root.
+X="$TMP/xbin"; mkdir -p "$X"
+cat >"$X/curl" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >>"$T/curl.argv"
+o="" d="" k="" prev="" url="" chat="" textf=""
+for a in "$@"; do
+  case "$prev" in -o) o="$a" ;; --data) d="$a" ;; -K) k="$a" ;;
+    --data-urlencode) case "$a" in chat_id=*) chat="${a#chat_id=}" ;; text@*) textf="${a#text@}" ;; esac ;; esac
+  prev="$a"; url="$a"
+done
+cat >>"$T/curl.stdin"; printf '%s\n' "$d" >>"$T/curl.body"
+if [[ -n "$k" ]] && grep -q 'api.telegram.org/bot' "$k"; then
+  printf 'chat=%s text=%s\n' "$chat" "$(cat "$textf")" >>"$T/tg"; echo '{"ok":true}'; exit 0
+fi
+case "$url" in
+  *list-type=2*) [[ -n "${LIST_FAIL:-}" ]] && exit 22
+     printf '<ListBucketResult><Prefix>o-0123456789abcdef01234567/</Prefix>'
+     for r in "$T"/repos/box-*; do [[ -d "$r" ]] && printf '<CommonPrefixes><Prefix>o-0123456789abcdef01234567/%s/</Prefix></CommonPrefixes>' "${r##*/}"; done
+     printf '</ListBucketResult>' ;;
+  */enroll) printf '%s' "$ENROLL_BODY" >"$o"; printf '%s' "$ENROLL_HTTP" ;;
+  */report) printf '{"ok":true}' >"$o"; printf 200 ;;
+esac
+exit 0
+EOF
+# A fake account database: getent/useradd/groupadd act on $T/passwd and $T/group
+# the way the real tools do (a taken uid/gid is refused, no -u means next free).
+cat >"$X/getent" <<'EOF'
+#!/usr/bin/env bash
+f="$T/$1"; [[ "$1" == passwd || "$1" == group ]] || exit 2
+[[ $# -lt 2 ]] && { cat "$f"; exit 0; }
+awk -F: -v k="$2" '$1==k || $3==k {print; found=1} END {exit !found}' "$f" || exit 2
+EOF
+cat >"$X/useradd" <<'EOF'
+#!/usr/bin/env bash
+echo "useradd $*" >>"$T/sys"; u="" g="" h="" s=/bin/bash p=""
+for a in "$@"; do case "$p" in -u) u="$a" ;; -g) g="$a" ;; -d) h="$a" ;; -s) s="$a" ;; esac; p="$a"; done; n="${*: -1}"
+awk -F: -v n="$n" '$1==n {f=1} END {exit !f}' "$T/passwd" && exit 9
+if [[ -n "$u" ]]; then awk -F: -v u="$u" '$3==u {f=1} END {exit !f}' "$T/passwd" && exit 4
+else u=$(awk -F: '$3>=1000 && $3<60000 {print $3}' "$T/passwd" | sort -n | tail -1); u=$(( ${u:-999} + 1 )); fi
+gid=$(awk -F: -v g="$g" '$1==g || $3==g {print $3; exit}' "$T/group")
+echo "$n:x:$u:${gid:-$u}::$h:$s" >>"$T/passwd"
+EOF
+cat >"$X/groupadd" <<'EOF'
+#!/usr/bin/env bash
+echo "groupadd $*" >>"$T/sys"; g="" p=""
+for a in "$@"; do [[ "$p" == -g ]] && g="$a"; p="$a"; done; n="${*: -1}"
+awk -F: -v n="$n" '$1==n {f=1} END {exit !f}' "$T/group" && exit 9
+if [[ -n "$g" ]]; then awk -F: -v g="$g" '$3==g {f=1} END {exit !f}' "$T/group" && exit 4
+else g=$(awk -F: '$3>=1000 && $3<60000 {print $3}' "$T/group" | sort -n | tail -1); g=$(( ${g:-999} + 1 )); fi
+echo "$n:x:$g:" >>"$T/group"
+EOF
+for t in usermod systemctl; do printf '#!/usr/bin/env bash\necho "%s $*" >>"$T/sys"\n' "$t" >"$X/$t"; done
+for t in chown chgrp; do printf '#!/usr/bin/env bash\necho "%s $*" >>"$T/own"\n' "$t" >"$X/$t"; done
+printf '#!/usr/bin/env bash\n[[ "$*" == "agent telegram-access get ava --json" ]] && echo %s\n' "'{\"ok\":true,\"data\":{\"access\":{\"allowFrom\":[1234567890]}}}'" >"$X/5dive"
+chmod +x "$X"/*
+xreset() {   # reset, plus the executed box: a fake account db and a bot for ava
+  reset; : >"$TMP/own"
+  printf 'root:x:0:0::/root:/bin/bash\n' >"$TMP/passwd"; printf 'root:x:0:\n' >"$TMP/group"
+  mkdir -p "$TMP/w/conn"; printf 'TELEGRAM_BOT_TOKEN=123456:AAbb_cc-DD\n' >"$TMP/w/conn/telegram-ava.env"
+}
+xrun() {   # bash bin/backup <verb...> as core runs it; rc in $TMP/rc
+  env PATH="$X:$PATH" FIVE_BACKUP_EUID=0 REGISTRY="$REGISTRY" FIVEDIVE_CONNECTOR_DIR="$TMP/w/conn" BACKUP_5DIVE_BIN="$X/5dive" \
+    ENROLL_BODY="$ENROLL_BODY" ENROLL_HTTP="$ENROLL_HTTP" STAGE_UID="${STAGE_UID:-1007}" STAGE_GID="${STAGE_GID:-1007}" \
+    bash "$BIN" "$@" >"$TMP/out" 2>&1; echo $? >"$TMP/rc"
+}
+check "EXECUTED: the file still runs under core's errexit (the trailer is there)" 'tail -n 6 "$BIN" | grep -q "set -euo pipefail"'
+
+xreset; xrun setup
+check "EXECUTED setup: rc 0, scheduled" '[[ $(rc) == 0 && -f "$FIVE_BACKUP_CRON" ]] || { cat "$TMP/out"; false; }'
+xreset; xrun run
+check "EXECUTED (2): the FIRST run on a never-set-up box (no status.json) exits 0" '[[ $(rc) == 0 && ! -e "$FIVE_BACKUP_STATE/status.json.tmp" ]] || { cat "$TMP/out"; false; }'
+check "EXECUTED (2): it records the run in status.json" 'jq -e ".ok == true and .snapshot == \"abc123\" and .lastOkAt != null" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
+check "EXECUTED (2): it reports the run to the API (ok, with the snapshot)" 'grep "\"snapshot\":\"abc123\"" "$TMP/curl.body" | grep -q "\"ok\":true"'
+check "EXECUTED: the first run made the key and DMed the owner its code, once" '[[ -s "$FIVE_BACKUP_DIR/key" && $(grep -c "^chat=1234567890 " "$TMP/tg") == 1 ]] && grep -q "$(_bk_code_pretty "$(code_on_box)")" "$TMP/tg"'
+check "EXECUTED CUSTODY: the code is in no API body, header or argv" 'K=$(code_on_box); ! grep -q "$K" "$TMP/curl.argv" "$TMP/curl.body" "$TMP/curl.stdin"'
+xrun status
+check "EXECUTED status: shows the run" '[[ $(rc) == 0 ]] && grep -q "^last run: .* ok$" "$TMP/out"'
+: >"$TMP/curl.body"; xrun run
+check "EXECUTED: the second run exits 0 and DMs nothing new" '[[ $(rc) == 0 && $(grep -c "^chat=" "$TMP/tg") == 1 ]] && grep -q "\"ok\":true" "$TMP/curl.body"'
+export RESTIC_BACKUP_RC=1; : >"$TMP/curl.body"; xrun run; export RESTIC_BACKUP_RC=0
+check "EXECUTED: a FAILED run is visible: rc 1, status.json not ok, reported not ok" '[[ $(rc) == 1 ]] && jq -e ".ok == false and .lastOkAt != null" "$FIVE_BACKUP_STATE/status.json" >/dev/null && grep -q "\"ok\":false" "$TMP/curl.body"'
+xrun status
+check "EXECUTED status: says FAILED" 'grep -q "FAILED" "$TMP/out"'
+xrun code
+check "EXECUTED code: prints the code" '[[ $(rc) == 0 ]] && grep -qx "$(_bk_code_pretty "$(code_on_box)")" "$TMP/out"'
+xrun sources
+check "EXECUTED sources: names this box" '[[ $(rc) == 0 ]] && grep -qx "box-42  (this box)" "$TMP/out"'
+xrun uninstall
+check "EXECUTED uninstall: rc 0, schedule gone" '[[ $(rc) == 0 && ! -e "$FIVE_BACKUP_CRON" ]]'
+xreset; ENROLL_HTTP=503; ENROLL_BODY='{"code":"backup_not_configured"}'; xrun run
+check "EXECUTED: an unready API: the run fails visibly (rc 1, status says why)" '[[ $(rc) == 1 ]] && jq -e ".ok == false" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
+
+# The fresh box at another provider: its `ubuntu` user holds the old agent's uid
+# and its group the old gid, the way OVH's image held uid 1000 in the drill.
+OLDU=$(id -u); OLDG=$(id -g)
+if (( OLDU >= 1000 && OLDG > 0 )); then
+  xreset; seed box-7 "$GOOD"
+  printf 'ubuntu:x:%s:%s::/home/ubuntu:/bin/bash\n' "$OLDU" "$OLDG" >>"$TMP/passwd"; printf 'ubuntu:x:%s:\n' "$OLDG" >>"$TMP/group"
+  mkdir -p "$FIVE_BACKUP_ROOT/etc/5dive" "$FIVE_BACKUP_ROOT/home/ubuntu"; echo "CONNECTORD_TOKEN=NEW_BOX" >"$FIVE_BACKUP_ROOT/etc/5dive/connectord.env"
+  echo mine >"$FIVE_BACKUP_ROOT/home/ubuntu/.profile"
+  STAGE_UID=$OLDU STAGE_GID=$OLDG xrun run   # the fresh box's first nightly run: waits for the code
+  check "EXECUTED fresh box: the first run waits for the owner's code (rc 0, no key)" '[[ $(rc) == 0 && ! -e "$FIVE_BACKUP_DIR/key" ]]'
+  STAGE_UID=$OLDU STAGE_GID=$OLDG xrun restore --code="$GOOD" --from=box-7 --yes
+  NEWU=$(awk -F: '$1=="agent-ava"{print $3}' "$TMP/passwd"); NEWG=$(awk -F: '$1=="agent-ava"{print $3}' "$TMP/group")
+  check "EXECUTED restore: rc 0, memory back, agent user recreated under a NEW uid and gid" '[[ $(rc) == 0 ]] && grep -q "blue door" "$FIVE_BACKUP_ROOT/home/agent-ava/MEMORY.md" && [[ -n "$NEWU" && "$NEWU" != "$OLDU" && -n "$NEWG" && "$NEWG" != "$OLDG" ]] || { cat "$TMP/out"; false; }'
+  check "UID TAKEN (3): every restored file of the agent is re-owned to its new uid" 'grep -qxF "chown -h $NEWU $FIVE_BACKUP_ROOT/home/agent-ava/MEMORY.md" "$TMP/own" && grep -qxF "chown -h $NEWU $FIVE_BACKUP_ROOT/home/agent-ava" "$TMP/own"'
+  check "UID TAKEN (3): and to its new gid" 'grep -qxF "chgrp -h $NEWG $FIVE_BACKUP_ROOT/home/agent-ava/MEMORY.md" "$TMP/own"'
+  check "UID TAKEN (3): every staged file of the old uid under the restored paths is re-owned" 'n=$(find "$FIVE_BACKUP_ROOT/home/agent-ava" "$FIVE_BACKUP_ROOT/var/lib/5dive" -uid "$OLDU" | wc -l); [[ $n -gt 2 && $(grep -c "^chown -h $NEWU " "$TMP/own") -ge $n ]]'
+  check "UID TAKEN (3): nothing the fresh box had of its own is touched (ubuntu, its identity)" '! grep -q "/home/ubuntu\|connectord.env" "$TMP/own" && [[ "$(cat "$FIVE_BACKUP_ROOT/home/ubuntu/.profile")" == mine ]]'
+  : >"$TMP/tg"; : >"$TMP/curl.body"; xrun run
+  check "EXECUTED fresh box: the next run after the restore exits 0, reports ok, DMs no new code" '[[ $(rc) == 0 && ! -s "$TMP/tg" ]] && grep -q "\"ok\":true" "$TMP/curl.body" && opens_repo box-42 "$GOOD"'
+  xreset; seed box-7 "$GOOD"
+  STAGE_UID=$OLDU STAGE_GID=$OLDG xrun restore --code="$GOOD" --from=box-7 --yes
+  check "UID FREE: a restore whose uid and gid are free here re-owns nothing" '[[ $(rc) == 0 && ! -s "$TMP/own" ]] && grep -q "useradd -M -u $OLDU " "$TMP/sys"'
+else
+  echo "skip — the uid-collision arms need a harness user with uid >= 1000 (this one is $OLDU)"
+fi
 
 # --- the manifests: what `5dive plugin add 5dive-ai/5dive-backup` reads -------------
 M=backup/.claude-plugin/plugin.json
