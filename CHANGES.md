@@ -11,11 +11,20 @@ Your own storage (lodar: «should we make it customizable?»).
   inside the URL is refused.
 - That path makes no request to the 5dive API (no enrol, no report, no listing),
   and it runs on a server 5dive does not host. `restore --to=` brings a backup back
-  from it on a fresh box. The key, the recovery code and its DM are unchanged.
+  from it on a fresh box. The key and the recovery code are unchanged, and so is 1.0.1's rule:
+  no Telegram message with the code unless `FIVE_BACKUP_KEY_TELEGRAM=1`.
 - A local destination is left out of its own backup. `status` names the destination.
 - Tests: backup_unit TO1-TO10 (zero API requests asserted on enable, run, sources
   and restore); mutants m10-m12. `tests/to_real_restic.sh <restic>` runs the same
   round trip with the real restic 0.17.3 (not in CI: it needs the release).
+
+## 1.0.1 — 2026-11-07 (key message off)
+
+- The recovery code is no longer sent as a Telegram message from the box's bot
+  (lodar: «feels invasive»). It stays on the box (`5dive backup code`), the
+  nightly run sends nothing, and `code-delivered` stays unset. The owner will
+  see it in the app's Settings > Backup. `FIVE_BACKUP_KEY_TELEGRAM=1` turns
+  the old message back on. Arms KEY OFF ×4, mutant m20.
 
 ## 1.0.0 — 2026-11-07 (DIVE-7873)
 

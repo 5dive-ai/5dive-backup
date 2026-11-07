@@ -45,3 +45,5 @@ m17() { sed -i 's/^          then \[\$a.owners\[\] | tostring | select(. as \$o 
 m18() { sed -i "s/^  grep -qE '\^TELEGRAM_ACCOUNT_URL=.+' \"\$d\/.env\" 2>\/dev\/null || { printf 5dive; return 0; }$/  printf 5dive; return 0/" "$F"; }
 # m19: a partner owner whose language is unknown gets English, not Russian -> PICK reds.
 m19() { sed -i 's/^  case "\${v,,}" in ""|ru\*) printf ru ;; \*) printf en ;; esac$/  case "${v,,}" in ru*) printf ru ;; *) printf en ;; esac/' "$F"; }
+# m20: the email-only default removed (the DM fires with no opt-in) -> KEY OFF arms red.
+m20() { sed -i '/FIVE_BACKUP_KEY_TELEGRAM:-0/d' backup/bin/backup; }

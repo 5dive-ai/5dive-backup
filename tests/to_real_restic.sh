@@ -53,6 +53,7 @@ box() {   # <n>: point every seam at box n
   export FIVE_API_BASE_FILE="$W/none" FIVE_API_BASE="https://api.test"
   mkdir -p "$W/b$1"
 }
+unset FIVE_BACKUP_KEY_TELEGRAM   # the default (1.0.1): no key message
 : >"$W/curl.log"; : >"$W/tg"; : >"$W/restic.argv"
 curl() { printf '%s\n' "$*" >>"$W/curl.log"; return 22; }   # every 5dive API request lands here
 require_root() { :; }
@@ -70,7 +71,8 @@ box 1; REGISTRY="$SB/var/lib/5dive/agents.json"; export FIVE_BACKUP_ROOT="$SB" F
 ( cmd_backup enable --to="$DEST" ) >"$W/o1" 2>&1; r1=$?
 ck "enable --to=<local path> rc 0 (real restic init)" '[[ $r1 == 0 && -f "$DEST/config" ]]'
 CODE=$(cat "$FIVE_BACKUP_DIR/key")
-ck "the key is on the box, 0600, and the owner got one DM" '[[ -n "$CODE" && $(stat -c %a "$FIVE_BACKUP_DIR/key") == 600 && $(grep -c chat=1234567890 "$W/tg") == 1 ]]'
+# 1.0.1: no key message unless FIVE_BACKUP_KEY_TELEGRAM=1; the code stays on the box for the app.
+ck "the key is on the box, 0600, and no Telegram message by default" '[[ -n "$CODE" && $(stat -c %a "$FIVE_BACKUP_DIR/key") == 600 && ! -s "$W/tg" ]]'
 ( cmd_backup run ) >"$W/o2" 2>&1; r2=$?
 ck "nightly run rc 0, status ok with a snapshot id" '[[ $r2 == 0 ]] && jq -e ".ok == true and (.snapshot|length) > 0" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
 SNAPS=$(RESTIC_PASSWORD_FILE="$FIVE_BACKUP_DIR/key" "$REAL" -r "$DEST" snapshots --json 2>/dev/null | jq length)
