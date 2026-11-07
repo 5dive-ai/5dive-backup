@@ -23,8 +23,13 @@ m7() { sed -i 's/\[\[ "\$chat" =~ \^\[0-9\]+\$ \]\] || continue   # a positive i
 m8() { sed -i 's/  if \[\[ ! -f "\$c" \]\]; then/  if true; then/' "$F"; }
 # m9: the bot token rides curl's argv again -> SEND reds.
 m9() { sed -i 's#  curl -s --connect-timeout 5 --max-time 10 -X POST -K "\$cfg"#  curl -s --connect-timeout 5 --max-time 10 -X POST "https://api.telegram.org/bot${token}/sendMessage"#' "$F"; }
-# m13-m16 guard the it4 drill fixes (main's fresh-box drill, 11-07). m10-m12 are
-# taken by the custom-destination branch stacked on this one.
+# m10: the owner's-storage path reports to the 5dive API after all.
+m10() { sed -i 's|^  _bk_dest >/dev/null \&\& return 0   # the owner.s own storage: nothing goes to 5dive$|  :|' "$F"; }
+# m11: --to still asks the 5dive API for storage (enrol) before using the owner's.
+m11() { sed -i 's|^_bk_storage() { _bk_dest >/dev/null \|\| _bk_enroll; }$|_bk_storage() { _bk_enroll \|\| _bk_dest >/dev/null; }|' "$F"; }
+# m12: a password inside --to is accepted.
+m12() { sed -i 's|^  if \[\[ "\$d" =~ ://\[^/@\]\*:\[^/@\]\*@ \]\]; then$|  if false; then|' "$F"; }
+# m13-m16 guard the it4 drill fixes (main's fresh-box drill, 11-07).
 # m13: restic is decompressed with bunzip2 only again -> INSTALL (1) reds (stock Ubuntu has no bzip2).
 m13() { sed -i 's/^  if command -v bunzip2 >\/dev\/null 2>&1; then bunzip2 -c "\$1" >"\$2" \&\& return 0; fi$/  bunzip2 -c "$1" >"$2"; return/' "$F"; }
 # m14: the first run's status read dies on the missing status.json under errexit -> EXECUTED (2) reds.

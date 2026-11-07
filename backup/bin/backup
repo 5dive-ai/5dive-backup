@@ -158,22 +158,30 @@ _backup_usage() {
   cat <<'EOF'
 usage: 5dive backup <command>
 
-Nightly encrypted copy of this box's agents in Cloudflare R2, outside the
-server provider. Only the owner holds the key (the recovery code).
+Nightly encrypted copy of this box's agents, outside the server provider:
+5dive's storage on a 5dive cloud server, or your own with --to. Only the
+owner holds the key (the recovery code).
 
-  enable [--auto] [--new-key]
+  enable [--auto] [--new-key] [--to=<restic repository>]
                         set up and schedule the nightly backup (root). Makes the
                         key, sends the owner the recovery code once. --auto: the
                         unattended form the nightly update runs; it never fails it.
                         A box whose owner already has a backup waits for a restore
                         instead; --new-key starts a new key anyway (the owner lost
                         the old code and gives up those backups).
+                        --to: back up to your own storage instead (a local path,
+                        s3:, b2:, sftp:, rest:, azure:, gs:, swift:, rclone:).
+                        Its keys come from the box's secret store, never the
+                        command line:  sudo 5dive secret write
+                        AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY --connector=backup
+                        That path never calls the 5dive API.
   run                   back up now (root; the nightly job runs this)
   status [--json]       last backup, its result, and whether it is scheduled
   code                  show the recovery code again (root)
-  restore --code=<code> [--from=<box-N>] [--snapshot=<id>] [--yes]
+  restore --code=<code> [--from=<box-N> | --to=<restic repository>] [--snapshot=<id>] [--yes]
                         on a fresh box: bring back a backup of this owner's box
-                        (default: this box's own; --from names an older box)
+                        (default: this box's own; --from names an older box;
+                        --to names your own storage, as given to enable)
   sources               the boxes of this owner that have a backup
   setup                 install restic and schedule the nightly run (root; what
                         `5dive plugin setup backup` runs). Makes no key: the
@@ -264,6 +272,7 @@ _bk_restic_install() {
 # Loads r2.env into the RESTIC_/AWS_ environment for one restic call. The
 # password reaches restic through RESTIC_PASSWORD_FILE, never argv or env.
 _bk_env_load() {   # [repo override]
+  local d; if d=$(_bk_dest); then [[ -z "${1:-}" ]] || return 1; _bk_dest_env_load "$d"; return 0; fi
   local f; f="$(_bk_dir)/r2.env"
   [[ -r "$f" ]] || return 1
   local R2_ENDPOINT="" R2_BUCKET="" R2_PREFIX="" BACKUP_REPO="" R2_ACCESS_KEY_ID="" R2_SECRET_ACCESS_KEY="" R2_SESSION_TOKEN=""
@@ -277,7 +286,8 @@ _bk_env_load() {   # [repo override]
 }
 _bk_r() {   # restic with the box key; <password file> <args...>
   local pw="$1"; shift
-  RESTIC_PASSWORD_FILE="$pw" RESTIC_CACHE_DIR="$(_bk_state)/cache" "$(_bk_restic)" -o s3.region=auto "$@"
+  local o=(-o s3.region=auto); _bk_dest >/dev/null && o=()   # R2's region; the owner's storage brings its own
+  RESTIC_PASSWORD_FILE="$pw" RESTIC_CACHE_DIR="$(_bk_state)/cache" "$(_bk_restic)" "${o[@]}" "$@"
 }
 # 0 the key opens the repo · 10 no repo there yet · 12 wrong key · else unreachable
 _bk_repo_probe() {   # <password file>
@@ -291,6 +301,60 @@ _bk_rekey() {   # <password file that opens it now> <new password file>
   for id in $ids; do _bk_r "$2" key remove "$id" >/dev/null 2>&1 || return 1; done
   _bk_repo_probe "$2" && ! _bk_repo_probe "$1"
 }
+
+# ---- the owner's own destination (lodar 11-07: «should we make it customizable?») --
+# `enable --to=<restic repository>`: the backup goes to storage the owner chose,
+# with that storage's keys from the box's secret store (connector `backup`, root
+# 0600: `5dive secret write KEY --connector=backup`), never argv or chat. That
+# path makes NO 5dive API call: no enrol, no report. The key, the recovery code,
+# restore and status are the same on both paths; only "where" and "whose
+# credentials" change.
+BACKUP_DEST_CONNECTOR="backup"
+# The variables restic reads for its backends; nothing else in the file is exported.
+BACKUP_DEST_VARS=(AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_DEFAULT_REGION AWS_PROFILE
+  B2_ACCOUNT_ID B2_ACCOUNT_KEY AZURE_ACCOUNT_NAME AZURE_ACCOUNT_KEY AZURE_ACCOUNT_SAS AZURE_ENDPOINT_SUFFIX
+  GOOGLE_PROJECT_ID GOOGLE_APPLICATION_CREDENTIALS GOOGLE_ACCESS_TOKEN
+  OS_AUTH_URL OS_REGION_NAME OS_USERNAME OS_USER_ID OS_PASSWORD OS_TENANT_ID OS_TENANT_NAME
+  OS_USER_DOMAIN_NAME OS_PROJECT_NAME OS_PROJECT_DOMAIN_NAME OS_APPLICATION_CREDENTIAL_ID OS_APPLICATION_CREDENTIAL_SECRET
+  RESTIC_REST_USERNAME RESTIC_REST_PASSWORD RCLONE_CONFIG)
+_bk_dest_file() { printf '%s/dest' "$(_bk_dir)"; }
+_bk_dest() {   # the owner's destination, or rc 1 for 5dive's storage
+  local d=""; [[ -r "$(_bk_dest_file)" ]] && d=$(head -n 1 "$(_bk_dest_file)")
+  [[ -n "$d" ]] && printf '%s' "$d"
+}
+# A restic repository: an absolute path or a backend URL, one line, no spaces.
+# A password inside the URL (scheme://user:pass@host) is refused: it would sit
+# in argv; RESTIC_REST_PASSWORD and the like go in the secret store instead.
+_bk_dest_check() {   # <repo> -> 0 ok, else prints why
+  local d="$1"
+  if [[ "$d" =~ [[:space:][:cntrl:]] || ! "$d" =~ ^(/.+|(s3|b2|sftp|rest|azure|gs|swift|rclone):.+)$ ]]; then
+    echo "--to takes a restic repository: an absolute path, or s3:, b2:, sftp:, rest:, azure:, gs:, swift: or rclone:"; return 1
+  fi
+  if [[ "$d" =~ ://[^/@]*:[^/@]*@ ]]; then
+    echo "--to must not carry a password; save it with: sudo 5dive secret write RESTIC_REST_PASSWORD --connector=$BACKUP_DEST_CONNECTOR"; return 1
+  fi
+}
+_bk_dest_set() { _bk_write0600 "$(_bk_dest_file)" "$1"$'\n'; }
+# Exports the owner's destination and its keys for restic. Values are read as
+# KEY=VALUE lines (never sourced); a KEY_FILE line (a multi-line secret) is read
+# from its file.
+_bk_dest_env_load() {   # <repo>
+  local f="${CONNECTORS_DIR}/${BACKUP_DEST_CONNECTOR}.env" v line k val
+  for v in "${BACKUP_DEST_VARS[@]}"; do unset "$v"; done
+  export RESTIC_REPOSITORY="$1"
+  if [[ -r "$f" ]]; then
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      line="${line%$'\r'}"; [[ "$line" =~ ^(export[[:space:]]+)?([A-Z0-9_]+)=(.*)$ ]] || continue
+      k="${BASH_REMATCH[2]}"; val="${BASH_REMATCH[3]}"
+      val="${val#\"}"; val="${val%\"}"; val="${val#\'}"; val="${val%\'}"
+      if [[ "$k" == *_FILE ]]; then k="${k%_FILE}"; [[ -r "$val" ]] && val=$(cat "$val") || continue; fi
+      for v in "${BACKUP_DEST_VARS[@]}"; do [[ "$k" == "$v" ]] && export "$k=$val"; done
+    done <"$f"
+  fi
+  BK_ENDPOINT="" BK_BUCKET="" BK_PREFIX="" BK_REPO="$1"
+}
+# Where the backup goes: the owner's own destination, else 5dive's (enrol).
+_bk_storage() { _bk_dest >/dev/null || _bk_enroll; }
 
 # ---- the API ------------------------------------------------------------------
 
@@ -321,6 +385,7 @@ _bk_enroll() {
   _bk_write0600 "$(_bk_dir)/r2.env" "$(printf 'R2_ENDPOINT=%s\nR2_BUCKET=%s\nR2_PREFIX=%s\nBACKUP_REPO=box-%s\nR2_ACCESS_KEY_ID=%s\nR2_SECRET_ACCESS_KEY=%s\nR2_SESSION_TOKEN=%s\n' "$ep" "$b" "$px" "$sid" "$ak" "$sk" "$st")"
 }
 _bk_report() {   # <ok true|false> <error> <bytes> <snapshot>
+  _bk_dest >/dev/null && return 0   # the owner's own storage: nothing goes to 5dive
   local body; body=$(jq -cn --argjson ok "$1" --arg e "${2:0:500}" --arg b "${3:-0}" --arg s "${4:-}" --arg r "${BK_REPO:-}" \
     '{ok:$ok, repo:$r} + (if $e=="" then {} else {error:$e} end) + (if ($b|test("^[0-9]+$")) then {bytes:($b|tonumber)} else {} end) + (if $s=="" then {} else {snapshot:$s} end)')
   _bk_api POST /report "$body" >/dev/null 2>&1 || true
@@ -349,12 +414,14 @@ cmd_backup_status() {
   [[ -f "$s/code-delivered" ]] && code=true
   [[ -f "$(_bk_dir)/key" ]] && keyed=true
   local state; state=$(cat "$s/state" 2>/dev/null || echo off)
+  local dest; dest=$(_bk_dest) || dest=""
   if (( JSON_MODE )); then
-    jq -cn --argjson st "$st" --arg state "$state" --argjson sched "$sched" --argjson code "$code" --argjson keyed "$keyed" \
-      '{ok:true, state:$state, scheduled:$sched, keyOnBox:$keyed, codeDelivered:$code} + $st'
+    jq -cn --argjson st "$st" --arg state "$state" --argjson sched "$sched" --argjson code "$code" --argjson keyed "$keyed" --arg d "$dest" \
+      '{ok:true, state:$state, scheduled:$sched, keyOnBox:$keyed, codeDelivered:$code, destination:(if $d=="" then "5dive" else $d end)} + $st'
     return 0
   fi
   echo "backup: $state$([[ $sched == true ]] && echo ', nightly')"
+  echo "destination: ${dest:-5dive cloud storage}"
   if [[ "$st" != "{}" ]]; then
     jq -r '"last run: \(.lastRunAt) \(if .ok then "ok" else "FAILED: \(.error)" end)", "last good backup: \(.lastOkAt // "never")"' <<<"$st"
   fi
@@ -532,7 +599,7 @@ _bk_cron_install() {
   local sid m h; sid="${BK_REPO#box-}"; [[ "$sid" =~ ^[0-9]+$ ]] || sid=0
   m=$(( sid % 60 )); h=$(( 2 + (sid / 60) % 3 ))   # 02:00-04:59, spread by box
   local c; c=$(_bk_cron); mkdir -p "$(dirname "$c")"
-  printf '# DIVE-7873: nightly encrypted backup to R2 (5dive backup --help)\n%s %s * * * root /usr/local/bin/5dive backup run >/dev/null 2>&1\n' "$m" "$h" >"$c.tmp" \
+  printf '# DIVE-7873: nightly encrypted backup (5dive backup --help)\n%s %s * * * root /usr/local/bin/5dive backup run >/dev/null 2>&1\n' "$m" "$h" >"$c.tmp" \
     && chmod 0644 "$c.tmp" && mv -f "$c.tmp" "$c"
 }
 
@@ -545,12 +612,20 @@ _bk_enable_fail() {   # <auto> <code> <msg> — --auto never fails the nightly u
 
 cmd_backup_enable() {
   require_root
-  local auto=0 newkey=0 a
-  for a in "$@"; do case "$a" in --auto) auto=1 ;; --new-key) newkey=1 ;; --json) JSON_MODE=1 ;; *) fail "$E_USAGE" "unknown flag: $a" ;; esac; done
+  local auto=0 newkey=0 to="" a
+  for a in "$@"; do case "$a" in --auto) auto=1 ;; --new-key) newkey=1 ;; --to=*) to="${a#--to=}" ;; --json) JSON_MODE=1 ;; *) fail "$E_USAGE" "unknown flag: $a" ;; esac; done
   (( auto && newkey )) && fail "$E_USAGE" "--new-key is the owner's choice; the unattended --auto never makes it"
+  if [[ -n "$to" ]]; then local bad; bad=$(_bk_dest_check "$to") || fail "$E_USAGE" "$bad"; fi
   local dir s; dir=$(_bk_dir); s=$(_bk_state); mkdir -p "$s" "$dir"; chmod 0700 "$dir"
   _bk_restic_install || { _bk_enable_fail "$auto" "$E_NOT_INSTALLED" "could not install restic ${BACKUP_RESTIC_VERSION}"; return 0; }
-  local why; why=$(_bk_enroll) || { _bk_enable_fail "$auto" "$E_GENERIC" "the 5dive API did not give this box backup storage (${why:-http ${BK_HTTP:-?}})"; return 0; }
+  if [[ -n "$to" ]]; then
+    local cur; cur=$(_bk_dest) || cur=""
+    # The box keeps its key (the owner's code stays the one code); backups made
+    # before stay where they are, under that same key.
+    [[ -r "$dir/key" && "$cur" != "$to" ]] && echo "backup: moving to $to with this box's key; earlier backups stay at ${cur:-5dive cloud storage}"
+    _bk_dest_set "$to" || fail "$E_GENERIC" "could not save the destination"
+  fi
+  local why; why=$(_bk_storage) || { _bk_enable_fail "$auto" "$E_GENERIC" "the 5dive API did not give this box backup storage (${why:-http ${BK_HTTP:-?}})"; return 0; }
   _bk_env_load || { _bk_enable_fail "$auto" "$E_GENERIC" "backup storage settings are unreadable"; return 0; }
   local rc=0
   if [[ -r "$dir/key" ]]; then
@@ -574,7 +649,8 @@ cmd_backup_enable() {
       return 0
     fi
     [[ $rc -eq 10 ]] || { _bk_enable_fail "$auto" "$E_GENERIC" "backup storage unreachable (restic rc $rc)"; return 0; }
-    local repos; repos=$(_bk_list_repos) || { _bk_enable_fail "$auto" "$E_GENERIC" "could not list this owner's earlier backups, so no key was made"; return 0; }
+    local repos=""
+    _bk_dest >/dev/null || repos=$(_bk_list_repos) || { _bk_enable_fail "$auto" "$E_GENERIC" "could not list this owner's earlier backups, so no key was made"; return 0; }
     if [[ -n "$repos" ]] && (( ! newkey )); then
       echo restore-available >"$s/state"
       echo "backup: this owner already has a backup ($(paste -sd, <<<"$repos")). Restore it: 5dive backup restore --code=<recovery code> --from=$(tail -n 1 <<<"$repos")"
@@ -610,7 +686,7 @@ cmd_backup_run() {
   local a; for a in "$@"; do case "$a" in --json) JSON_MODE=1 ;; *) fail "$E_USAGE" "unknown flag: $a" ;; esac; done
   local s dir; s=$(_bk_state); dir=$(_bk_dir); mkdir -p "$s"
   # Not a 5dive-managed box (no box identity): nothing to back up to.
-  [[ -r "$(_bk_connectord_env)" ]] || { echo "backup: not a 5dive-managed box" >&2; return 0; }
+  [[ -r "$(_bk_connectord_env)" ]] || _bk_dest >/dev/null || { echo "backup: not a 5dive-managed box (5dive backup enable --to=<your storage> backs up to your own)" >&2; return 0; }
   # The rollout: the nightly job enables itself on a box that has never been
   # set up, so a CLI update is all a box needs. A box that refuses (storage not
   # ready, an earlier backup waiting for its code) stays off and says why.
@@ -627,7 +703,7 @@ cmd_backup_run() {
   local err="" bytes="" snap="" rc=0 out errf
   if [[ ! -r "$dir/key" ]]; then
     err="no backup key on this box"
-  elif ! _bk_enroll >/dev/null; then
+  elif ! _bk_storage >/dev/null; then
     err="the 5dive API did not give this box backup storage (http ${BK_HTTP:-?})"
   elif ! _bk_env_load; then
     err="backup storage settings missing"
@@ -636,6 +712,8 @@ cmd_backup_run() {
     _bk_users_manifest "$(_bk_users)"
     local ex=() e p paths=()
     for e in "${BACKUP_EXCLUDES[@]}"; do ex+=(--exclude "$e"); done
+    # A local destination inside a backed-up path must not back itself up.
+    local own; own=$(_bk_dest) && [[ "$own" == /* ]] && ex+=(--exclude "$own")
     for p in "${BACKUP_PATHS[@]}"; do [[ -e "$p" ]] && paths+=("$p"); done
     errf=$(mktemp)
     out=$(_bk_r "$dir/key" backup --json --exclude-caches "${ex[@]}" "${paths[@]}" 2>"$errf") || rc=$?
@@ -685,6 +763,7 @@ _bk_list_repos() {
 }
 cmd_backup_sources() {
   require_root
+  local d; if d=$(_bk_dest); then echo "$d  (this box's own destination)"; return 0; fi
   _bk_enroll >/dev/null || fail "$E_GENERIC" "the 5dive API did not give this box backup storage"
   _bk_env_load || fail "$E_GENERIC" "backup storage settings are unreadable"
   local r; r=$(_bk_list_repos)
@@ -789,11 +868,12 @@ _bk_restore_apply() {   # <stage> <root>
 
 cmd_backup_restore() {
   require_root
-  local code="" from="" snap="latest" yes=0 a
+  local code="" from="" to="" snap="latest" yes=0 a
   for a in "$@"; do
     case "$a" in
       --code=*) code="${a#--code=}" ;;
       --from=*) from="${a#--from=}" ;;
+      --to=*) to="${a#--to=}" ;;
       --snapshot=*) snap="${a#--snapshot=}" ;;
       --yes|-y) yes=1 ;;
       --json) JSON_MODE=1 ;;
@@ -805,9 +885,13 @@ cmd_backup_restore() {
   local norm; norm=$(_bk_code_normalize "$code") || fail "$E_VALIDATION" "that is not a recovery code (28 letters and digits, dashes optional)"
   [[ -z "$from" || "$from" =~ ^box-[0-9]+$ ]] || fail "$E_VALIDATION" "--from takes a box name like box-123 (see: 5dive backup sources)"
   [[ "$snap" == latest || "$snap" =~ ^[0-9a-f]{8,64}$ ]] || fail "$E_VALIDATION" "--snapshot takes a snapshot id or latest"
+  [[ -n "$to" && -n "$from" ]] && fail "$E_USAGE" "--from names one of 5dive's backups, --to your own storage: give one"
+  if [[ -n "$to" ]]; then local bad; bad=$(_bk_dest_check "$to") || fail "$E_USAGE" "$bad"; fi
   local dir s; dir=$(_bk_dir); s=$(_bk_state); mkdir -p "$s" "$dir"; chmod 0700 "$dir"
   _bk_restic_install || fail "$E_NOT_INSTALLED" "could not install restic ${BACKUP_RESTIC_VERSION}"
-  _bk_enroll >/dev/null || fail "$E_GENERIC" "the 5dive API did not give this box backup storage"
+  [[ -n "$to" ]] && { _bk_dest_set "$to" || fail "$E_GENERIC" "could not save the destination"; }
+  [[ -n "$from" ]] && _bk_dest >/dev/null && fail "$E_USAGE" "this box backs up to its own storage ($(_bk_dest)); --from names one of 5dive's backups"
+  _bk_storage >/dev/null || fail "$E_GENERIC" "the 5dive API did not give this box backup storage"
   _bk_env_load "$from" || fail "$E_GENERIC" "backup storage settings are unreadable"
   local src="${from:-$BK_REPO}"
   local pw; pw=$(mktemp); chmod 0600 "$pw"; printf '%s' "$norm" >"$pw"
@@ -886,7 +970,7 @@ cmd_backup_setup() {
     # Spread by host until enable knows the server id; 03:mm, never all at once.
     m=$(( $(hostname | cksum | cut -d' ' -f1) % 60 ))
     mkdir -p "$(dirname "$c")"
-    printf '# DIVE-7873: nightly encrypted backup to R2 (5dive backup --help)\n%s 3 * * * root /usr/local/bin/5dive backup run >/dev/null 2>&1\n' "$m" >"$c.tmp" \
+    printf '# DIVE-7873: nightly encrypted backup (5dive backup --help)\n%s 3 * * * root /usr/local/bin/5dive backup run >/dev/null 2>&1\n' "$m" >"$c.tmp" \
       && chmod 0644 "$c.tmp" && mv -f "$c.tmp" "$c" || fail "$E_GENERIC" "could not write $c"
   fi
   # The schedule is in place either way, so a restic that cannot be fetched now
