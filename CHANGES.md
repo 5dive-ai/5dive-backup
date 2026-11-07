@@ -28,4 +28,16 @@ then a fresh OVH server):
   files and identity are left alone.
 - Tests now also EXECUTE `bin/backup` under its own `set -euo pipefail`
   (setup, run, status, code, sources, restore, uninstall), not only source it.
+
+Fixed before release, from review of the owner's key message (DIVE-7893):
+
+- The backup key goes to the server's OWNER only, never to everyone the bot
+  talks to. A guest added in the app or a partner's cabinet used to get it too.
+  The owner is the telegram plugin's own owners record; a bot with no such
+  record and two or more people paired sends nobody the key (the owner can
+  read it with `5dive backup code`).
+- A partner's client server (OINOA) gets the partner's text, approved by lodar:
+  Russian, or English when the owner's Telegram language is known and is not
+  Russian. It names no platform and no provider. 5dive's own servers get the
+  same text as before.
   Mutants m13-m16.
