@@ -14,7 +14,8 @@ Your own storage (lodar: «should we make it customizable?»).
   from it on a fresh box. The key, the recovery code and its DM are unchanged.
 - A local destination is left out of its own backup. `status` names the destination.
 - Tests: backup_unit TO1-TO10 (zero API requests asserted on enable, run, sources
-  and restore); mutants m10-m12.
+  and restore); mutants m10-m12. `tests/to_real_restic.sh <restic>` runs the same
+  round trip with the real restic 0.17.3 (not in CI: it needs the release).
 
 ## 1.0.0 — 2026-11-07 (DIVE-7873)
 
@@ -44,6 +45,7 @@ then a fresh OVH server):
   files and identity are left alone.
 - Tests now also EXECUTE `bin/backup` under its own `set -euo pipefail`
   (setup, run, status, code, sources, restore, uninstall), not only source it.
+  Mutants m13-m16.
 
 Fixed before release, from review of the owner's key message (DIVE-7893):
 
@@ -56,4 +58,4 @@ Fixed before release, from review of the owner's key message (DIVE-7893):
   Russian, or English when the owner's Telegram language is known and is not
   Russian. It names no platform and no provider. 5dive's own servers get the
   same text as before.
-  Mutants m13-m16.
+- Tests: OWNER ONLY and partner PICK arms; mutants m17-m19.
