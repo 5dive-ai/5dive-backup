@@ -6,13 +6,13 @@
 # other than the one the box runs on. A restore is a fresh box plus that copy.
 # The provider's own snapshots stay as they are; this is an extra copy.
 #
-# WHERE IT RUNS. Only on servers 5dive hosts: the API provisioner adds this
-# plugin to managed boxes (5dive-api scripts/install/tools.sh for new ones,
-# scripts/update.sh for the fleet). It is NOT part of the open-source CLI and a
-# self-installed box never gets it unless its owner adds it (lodar 2026-11-07:
-# «lets not scare self hosters with that. should have been a plugin»). Storage is
-# minted per box by 5dive's API, so on a box the API does not host there is
-# nothing to back up to and enable says so.
+# WHERE IT RUNS. On any box running 5dive. The API provisioner adds this plugin
+# to the servers 5dive hosts (5dive-api scripts/install/tools.sh for new ones,
+# scripts/update.sh for the fleet), and there 5dive's API mints the storage. It
+# is NOT part of the open-source CLI (lodar 2026-11-07: «lets not scare self
+# hosters with that. should have been a plugin»): a self-installed box gets it
+# only if its owner adds it, and backs up to the owner's own storage with
+# `enable --to` (1.1.0), which never calls the 5dive API.
 #
 # THE KEY IS THE OWNER'S (lodar 2026-11-07: «i hope we will not see any files»).
 # restic encrypts with a password made HERE, on the box, and shown to the owner

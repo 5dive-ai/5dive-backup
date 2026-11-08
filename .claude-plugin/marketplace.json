@@ -1,7 +1,7 @@
 {
   "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
   "name": "5dive-backup",
-  "description": "The 5dive backup plugin (the `5dive backup` verb): a nightly encrypted copy of a box's agents at a second provider, under a key only the owner holds. Installed on 5dive-hosted servers; never part of the open-source CLI.",
+  "description": "The 5dive backup plugin (the `5dive backup` verb): a nightly encrypted copy of a 5dive server's agents, to your own storage or, on a server 5dive hosts, to 5dive's, under a key only the owner holds. Not part of the core CLI: add it with 5dive plugin add 5dive-ai/5dive-backup.",
   "owner": {
     "name": "5dive",
     "email": "support@5dive.com"
@@ -9,7 +9,7 @@
   "plugins": [
     {
       "name": "backup",
-      "description": "Every night the box sends an encrypted, deduplicated copy of its agents (homes, memory, chats, settings) to Cloudflare R2, outside the server provider. The key is made on the box and given only to the owner, as a recovery code; one command restores a fresh server from it.",
+      "description": "Every night the server sends an encrypted, deduplicated copy of its agents (homes, memory, chats, settings) to storage the owner chooses (S3, B2, SFTP, any restic backend or a local path), or to 5dive's storage on a 5dive-hosted server. The key is made on the server and given only to the owner, as a recovery code; one command restores a fresh server from it.",
       "category": "operations",
       "source": "./backup",
       "homepage": "https://github.com/5dive-ai/5dive-backup"

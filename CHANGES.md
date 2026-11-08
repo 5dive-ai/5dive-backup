@@ -1,5 +1,15 @@
 # Changes
 
+## 1.1.3 — 2026-11-08 (docs: for anyone running 5dive)
+
+- README leads with the self-hosted path: add the plugin, save your storage
+  keys, `enable --to`, save the recovery code, and restore on a fresh server.
+  The 5dive-hosted path is its own short section. It no longer says the code is
+  sent to Telegram.
+- The manifests and the setup hint no longer say it only works on a server
+  5dive hosts; the hint names `enable --to` for a self-installed server. No
+  code change.
+
 ## 1.1.2 — 2026-11-08 (DIVE-7929, two boxes that never backed up)
 
 - `backup run` takes its lock before the unattended first enable, not after it.
