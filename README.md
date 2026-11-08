@@ -9,12 +9,12 @@ owner's Telegram as a recovery code. 5dive stores only encrypted data and cannot
 open it. Lose both the server and the code, and nobody can restore it, 5dive
 included.
 
-## Where it runs
+## Where it goes
 
-On servers 5dive hosts. The 5dive provisioner adds it to them; it is not part
-of the open-source 5dive CLI, and a self-installed server never gets it unless
-its owner adds it. The storage is given to each server by 5dive's API, so on a
-server the API does not host there is nothing to back up to.
+- **On a server 5dive hosts:** 5dive's storage (an EU bucket), set up by the 5dive provisioner. Nothing to do.
+- **Anywhere else:** your own storage, `sudo 5dive backup enable --to=<restic repository>` (a local path, `s3:`, `b2:`, `sftp:`, `rest:`, `azure:`, `gs:`, `swift:`, `rclone:`). Its keys go in the box's secret store, never the command line: `sudo 5dive secret write AWS_ACCESS_KEY_ID,AWS_SECRET_ACCESS_KEY --connector=backup`. This path never talks to 5dive.
+
+The key, the recovery code, restore and status work the same on both. It is not part of the open-source 5dive CLI: a self-installed server gets it only if its owner adds it (`5dive plugin add backup@5dive-backup`).
 
 ## Commands
 
@@ -23,9 +23,9 @@ server the API does not host there is nothing to back up to.
 sudo 5dive backup run               back up now (the nightly job runs this)
 sudo 5dive backup code              show the recovery code again
 sudo 5dive backup sources           this owner's servers that have a backup
-sudo 5dive backup restore --code=XXXX-XXXX-... [--from=box-N] --yes
+sudo 5dive backup restore --code=XXXX-XXXX-... [--from=box-N | --to=<repo>] --yes
                                     on a fresh server: bring the agents back
-sudo 5dive backup enable [--new-key]
+sudo 5dive backup enable [--new-key] [--to=<restic repository>]
 sudo 5dive backup setup | uninstall
 ```
 
