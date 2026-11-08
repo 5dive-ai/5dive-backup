@@ -1,6 +1,6 @@
 {
   "name": "backup",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "description": "Nightly encrypted backup of a 5dive-hosted server's agents to a second provider. Only the owner holds the key.",
   "author": {
     "name": "5dive",
@@ -38,7 +38,7 @@
       "review": "official"
     },
     "setup": {
-      "hint": "Installs restic (a pinned, checksum-verified release) and schedules the nightly backup in /etc/cron.d/5dive-backup. Storage is given to the server by 5dive's API, so this only works on a 5dive-hosted server. The first nightly run makes the key on this server and sends the owner the recovery code by Telegram DM; 5dive never sees it. Undo: sudo 5dive backup uninstall",
+      "hint": "Installs restic (a pinned, checksum-verified release) and schedules the nightly backup in /etc/cron.d/5dive-backup. Storage is given to the server by 5dive's API, so this only works on a 5dive-hosted server. The first run makes the key on this server; the recovery code stays on the server until the owner opens it in the app (Settings > Backup), and 5dive never keeps it. Undo: sudo 5dive backup uninstall",
       "command": "sudo 5dive backup setup"
     }
   }

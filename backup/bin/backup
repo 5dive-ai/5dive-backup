@@ -164,7 +164,8 @@ owner holds the key (the recovery code).
 
   enable [--auto] [--new-key] [--to=<restic repository>]
                         set up and schedule the nightly backup (root). Makes the
-                        key, sends the owner the recovery code once. --auto: the
+                        key; the recovery code stays on this box until the owner
+                        opens it in the app (Settings > Backup). --auto: the
                         unattended form the nightly update runs; it never fails it.
                         A box whose owner already has a backup waits for a restore
                         instead; --new-key starts a new key anyway (the owner lost
@@ -717,8 +718,19 @@ cmd_backup_run() {
   require_root
   local a; for a in "$@"; do case "$a" in --json) JSON_MODE=1 ;; *) fail "$E_USAGE" "unknown flag: $a" ;; esac; done
   local s dir; s=$(_bk_state); dir=$(_bk_dir); mkdir -p "$s"
-  # Not a 5dive-managed box (no box identity): nothing to back up to.
-  [[ -r "$(_bk_connectord_env)" ]] || _bk_dest >/dev/null || { echo "backup: not a 5dive-managed box (5dive backup enable --to=<your storage> backs up to your own)" >&2; return 0; }
+  # Not a 5dive-managed box (no box identity): nothing to back up to. Said in
+  # the log too (DIVE-7929): the nightly cron throws stdout away, so a box that
+  # lost its identity otherwise never showed why it never backed up.
+  if ! [[ -r "$(_bk_connectord_env)" ]] && ! _bk_dest >/dev/null; then
+    printf '%s run skipped: no %s, so this is not a 5dive-managed box (5dive backup enable --to=<your storage> backs up to your own)\n' \
+      "$(date -u +%FT%TZ)" "$(_bk_connectord_env)" >>"$(_bk_log)" 2>/dev/null || true
+    echo "backup: not a 5dive-managed box (5dive backup enable --to=<your storage> backs up to your own)" >&2
+    return 0
+  fi
+  # One run at a time, taken BEFORE the auto-enable below (DIVE-7929): the
+  # provisioner now starts the first run right after setup, and it can meet the
+  # 03:mm cron run. Two first runs enabling at once would make two keys.
+  exec 9>"$s/run.lock"; flock -n 9 || fail "$E_CONFLICT" "a backup is already running"
   # The rollout: the nightly job enables itself on a box that has never been
   # set up, so a CLI update is all a box needs. A box that refuses (storage not
   # ready, an earlier backup waiting for its code) stays off and says why.
@@ -730,7 +742,6 @@ cmd_backup_run() {
     _bk_report false "waiting for the owner's recovery code to restore an earlier backup (5dive backup restore), or 5dive backup enable --new-key" "" ""
     return 0
   fi
-  exec 9>"$s/run.lock"; flock -n 9 || fail "$E_CONFLICT" "a backup is already running"
   local log; log=$(_bk_log); mkdir -p "$(dirname "$log")" 2>/dev/null || true
   local err="" bytes="" snap="" rc=0 out errf
   if [[ ! -r "$dir/key" ]]; then
@@ -1009,7 +1020,7 @@ cmd_backup_setup() {
   # is fetched again by the first nightly run (enable installs it too).
   _bk_restic_install || fail "$E_NOT_INSTALLED" "could not install restic ${BACKUP_RESTIC_VERSION}; the nightly run will try again"
   if (( JSON_MODE )); then jq -cn --arg c "$c" '{ok:true, scheduled:true, cron:$c}'
-  else echo "backup: scheduled nightly ($c). The first run makes the key on this server and sends the owner the recovery code."; fi
+  else echo "backup: scheduled nightly ($c). The first run makes the key on this server; the recovery code stays here until the owner opens it in the app (Settings > Backup)."; fi
 }
 
 cmd_backup_uninstall() {
