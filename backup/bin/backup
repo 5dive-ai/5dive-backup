@@ -177,7 +177,8 @@ owner holds the key (the recovery code).
                         That path never calls the 5dive API.
   run                   back up now (root; the nightly job runs this)
   status [--json]       last backup, its result, and whether it is scheduled
-  code                  show the recovery code again (root)
+  code [--json] [--seen] show the recovery code again (root). --seen: the owner
+                        has read it (the app), so nothing else ever sends it
   restore --code=<code> [--from=<box-N> | --to=<restic repository>] [--snapshot=<id>] [--yes]
                         on a fresh box: bring back a backup of this owner's box
                         (default: this box's own; --from names an older box;
@@ -429,11 +430,29 @@ cmd_backup_status() {
   return 0
 }
 
+# DIVE-7899 (lodar 2026-11-07 21:55Z): the owner reads the code in the app,
+# Settings > Backup, on a tap. The API runs `5dive backup code --json --seen` here
+# through the box's shell daemon and relays the answer to the owner without
+# storing it. --json: {ok, code, lang, warning}, the warning being the approved
+# key text's last paragraph in the owner's variant. --seen: the owner has it now,
+# so code-delivered is written and no other channel ever sends it.
 cmd_backup_code() {
+  local a seen=0
+  for a in "$@"; do case "$a" in --json) JSON_MODE=1 ;; --seen) seen=1 ;; *) fail "$E_USAGE" "unknown flag: $a" ;; esac; done
   require_root
-  local k; k="$(_bk_dir)/key"
+  local k code; k="$(_bk_dir)/key"
   [[ -r "$k" ]] || fail "$E_NOT_FOUND" "no backup key on this box (5dive backup enable makes one)"
-  _bk_code_pretty "$(cat "$k")"; echo
+  code=$(_bk_code_pretty "$(cat "$k")")
+  if (( seen )); then
+    local s; s=$(_bk_state)
+    mkdir -p "$s" && { [[ -f "$s/code-delivered" ]] || date -u +%FT%TZ >"$s/code-delivered"; }
+  fi
+  if (( JSON_MODE )); then
+    local v; v=$(_bk_box_variant)
+    jq -cn --arg c "$code" --arg l "$v" --arg w "$(_bk_code_warning "$v")" '{ok:true, code:$c, lang:$l, warning:$w}'
+  else
+    printf '%s\n' "$code"
+  fi
 }
 
 # ---- owner delivery -------------------------------------------------------------
@@ -511,6 +530,19 @@ _bk_code_variant() {
   [[ -r "$d/lite-lang" ]] && v=$(head -c 16 "$d/lite-lang" 2>/dev/null | tr -d '[:space:]')
   case "${v,,}" in ""|ru*) printf ru ;; *) printf en ;; esac
 }
+# The box's variant for a reader with no agent of their own (the app): a partner's
+# variant when any seat here is a partner seat, else 5dive.
+_bk_box_variant() {
+  local name v
+  while IFS= read -r name; do
+    [[ -n "$name" ]] || continue
+    v=$(_bk_code_variant "$name")
+    [[ "$v" != 5dive ]] && { printf '%s' "$v"; return 0; }
+  done < <(jq -r '.agents // {} | keys[]' "$REGISTRY" 2>/dev/null)
+  printf 5dive
+}
+# [5dive|ru|en] -> the approved key text's warning (its last paragraph), verbatim.
+_bk_code_warning() { _bk_code_message XXXX "${1:-5dive}" | awk -v RS= '{p=$0} END{print p}'; }
 # <token> <chat> <thread> <text> -> Telegram's JSON answer on stdout. The text
 # reaches curl from a 0600 file and the token from a 0600 config file, never
 # argv (any process can read another's /proc/<pid>/cmdline). Core's

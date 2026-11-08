@@ -47,3 +47,7 @@ m18() { sed -i "s/^  grep -qE '\^TELEGRAM_ACCOUNT_URL=.+' \"\$d\/.env\" 2>\/dev\
 m19() { sed -i 's/^  case "\${v,,}" in ""|ru\*) printf ru ;; \*) printf en ;; esac$/  case "${v,,}" in ru*) printf ru ;; *) printf en ;; esac/' "$F"; }
 # m20: the email-only default removed (the DM fires with no opt-in) -> KEY OFF arms red.
 m20() { sed -i '/FIVE_BACKUP_KEY_TELEGRAM:-0/d' backup/bin/backup; }
+# m21: --seen does not mark the code delivered -> APP seen arms red.
+m21() { sed -i 's/{ \[\[ -f "\$s\/code-delivered" \]\] || date -u +%FT%TZ >"\$s\/code-delivered"; }/true/' backup/bin/backup; }
+# m22: the app always reads the 5dive text, even on a partner box -> APP partner arms red.
+m22() { sed -i "s/\[\[ \"\$v\" != 5dive \]\] \&\& { printf '%s' \"\$v\"; return 0; }/:/" backup/bin/backup; }

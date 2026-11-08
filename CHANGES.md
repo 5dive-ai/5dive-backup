@@ -1,5 +1,14 @@
 # Changes
 
+## 1.1.1 — 2026-11-08 (DIVE-7899, the code in the app)
+
+- `5dive backup code --json` answers `{ok, code, lang, warning}`: the warning is
+  the approved key text's last paragraph, in the box's variant (a partner seat
+  anywhere on the box gives the partner's RU/EN text). The app shows it under
+  the code in Settings > Backup.
+- `--seen`: the owner has read it, so `code-delivered` is written and the
+  nightly run never sends it on another channel. Arms APP ×11, mutants m21-m22.
+
 ## 1.1.0 — 2026-11-07 (DIVE-7873)
 
 Your own storage (lodar: «should we make it customizable?»).
