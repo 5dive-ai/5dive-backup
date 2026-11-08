@@ -1,5 +1,18 @@
 # Changes
 
+## 1.1.2 — 2026-11-08 (DIVE-7929, two boxes that never backed up)
+
+- `backup run` takes its lock before the unattended first enable, not after it.
+  The provisioner now starts the first run right after setup, and that run can
+  meet the 03:mm cron run: two first runs enabling at once would make two keys.
+  Arm LOCK, mutant m23.
+- A run on a box with no 5dive identity (no connectord.env) writes why to the
+  backup log. The cron discards its output, so before this the box showed
+  nothing at all. Arm IDENT, mutant m24.
+- `setup`, `--help` and the setup hint no longer say the first run "sends the
+  owner the recovery code": since 1.0.1 it stays on the box until the app
+  shows it. Arm WORDING.
+
 ## 1.1.1 — 2026-11-08 (DIVE-7899, the code in the app)
 
 - `5dive backup code --json` answers `{ok, code, lang, warning}`: the warning is

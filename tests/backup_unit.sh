@@ -332,6 +332,23 @@ check "SETUP: restic unavailable -> rc 7, and the schedule is still in place for
 reset; ( cmd_backup enable ) >/dev/null 2>&1; K=$(code_on_box); run uninstall
 check "UNINSTALL: the schedule is gone, the key is kept, state is off" '[[ $(rc) == 0 && ! -e "$FIVE_BACKUP_CRON" && "$(code_on_box)" == "$K" && "$(cat "$FIVE_BACKUP_STATE/state")" == off ]]'
 
+# --- DIVE-7929: the first run the provisioner starts, and the box that never backed up ---
+# LOCK: a run already holds run.lock (the cron's, or the provisioner's first run)
+# -> this run refuses BEFORE its unattended enable, so it never makes a second key.
+reset; mkdir -p "$FIVE_BACKUP_STATE"; exec 8>"$FIVE_BACKUP_STATE/run.lock"; flock -n 8; run run; exec 8>&-
+check "LOCK: a second first run while one holds the lock: rc 5, no key made, no restic init" \
+  '[[ $(rc) == 5 && ! -e "$FIVE_BACKUP_DIR/key" ]] && ! gq " init" "$TMP/restic.argv" && gq "already running" "$TMP/out"'
+reset; run run
+check "LOCK: with the lock free the same first run enables and backs up (control)" '[[ $(rc) == 0 && -n "$(code_on_box)" ]]'
+# IDENT: no connectord.env and no own destination -> rc 0 as before, and the log says why.
+reset; rm -f "$FIVE_CONNECTORD_ENV"; run run
+check "IDENT: a box with no identity: rc 0, nothing made, and the backup log names the missing file" \
+  '[[ $(rc) == 0 && ! -e "$FIVE_BACKUP_DIR/key" ]] && gq "run skipped: no $FIVE_CONNECTORD_ENV, so this is not a 5dive-managed box" "$FIVE_BACKUP_LOG"'
+# WORDING: nothing tells the owner the code is sent anymore (1.0.1 keeps it on the box).
+reset; run setup
+check "WORDING: setup, --help and the manifest hint never say the code is sent" \
+  '! gq "sends the owner" "$TMP/out" && ! gq -i "sends the owner\|by Telegram DM" "$BIN" backup/.claude-plugin/plugin.json && gq "stays here until the owner opens it in the app" "$TMP/out"'
+
 # --- owner delivery through core's CLI (the plugin divergence) ---------------------
 reset; : >"$TMP/curl.argv"
 ( source "$BIN"; _bk_send 123:SECRET_BOT_TOKEN 555 "" "the code ABCD-SECRETCODE" ) >/dev/null 2>&1
