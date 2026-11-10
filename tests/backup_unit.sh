@@ -58,7 +58,7 @@ reset() {
   printf 'CONNECTORD_TOKEN=boxtok_SECRET123\n' >"$FIVE_CONNECTORD_ENV"
   REGISTRY="$TMP/w/state/agents.json"; printf '{"agents":{"ava":{}}}' >"$REGISTRY"
   : >"$TMP/restic.ak"; CONNECTORS_DIR="$TMP/w/etc/connectors"; : >"$TMP/curl.argv"; : >"$TMP/curl.stdin"; : >"$TMP/curl.body"; : >"$TMP/restic.argv"; : >"$TMP/tg"; : >"$TMP/restic.pw"; : >"$TMP/restic.sess"; : >"$TMP/sys"
-  export RESTIC_PROBE_RC="" RESTIC_BACKUP_RC=0 RESTIC_SILENT="" LIST_FAIL="" T="$TMP"
+  export RESTIC_PROBE_RC="" RESTIC_BACKUP_RC=0 RESTIC_SILENT="" RESTIC_INIT_RC="" LIST_FAIL="" T="$TMP"
   export FIVE_BACKUP_KEY_TELEGRAM=1   # the DM arms below drive the (now opt-in) Telegram path
   # restic stub: logs the repository + argv and the password it was given, then
   # acts on $T/repos/<repo>/keys (one password per line).
@@ -75,14 +75,16 @@ case " $* " in
   *" version "*) echo "restic 0.17.3 compiled with go1.23.3 on linux/amd64"; exit 0 ;;
   *" cat config"*) [[ -n "${RESTIC_PROBE_RC:-}" ]] && exit "$RESTIC_PROBE_RC"
      [[ -d "$R" ]] || exit 10; opens && exit 0; exit 12 ;;
-  *" init"*) [[ -d "$R" ]] && { echo "Fatal: config file already exists" >&2; exit 1; }
+  *" init"*) [[ -n "${RESTIC_INIT_RC:-}" ]] && { echo "Fatal: create repository failed" >&2; exit "$RESTIC_INIT_RC"; }
+     [[ -d "$R" ]] && { echo "Fatal: config file already exists" >&2; exit 1; }
      mkdir -p "$R"; printf '%s\n' "$pw" >"$R/keys"; exit 0 ;;
   *" key add "*) opens || exit 12; printf '%s\n' "$(cat "$(argafter --new-password-file "$@")")" >>"$R/keys"; exit 0 ;;
   *" key list "*) opens || exit 12
      while IFS= read -r k; do jq -cn --arg id "$(kid "$k")" --argjson c "$([[ "$k" == "$pw" ]] && echo true || echo false)" '{current:$c, id:$id}'; done <"$R/keys" | jq -cs . ; exit 0 ;;
   *" key remove "*) opens || exit 12; id="${@: -1}"; [[ "$id" == "$(kid "$pw")" ]] && exit 1
      while IFS= read -r k; do [[ "$(kid "$k")" == "$id" ]] || printf '%s\n' "$k"; done <"$R/keys" >"$R/keys.n"; mv "$R/keys.n" "$R/keys"; exit 0 ;;
-  *" backup "*) opens || { echo "Fatal: wrong password or no key found" >&2; exit 12; }
+  *" backup "*) [[ -d "$R" ]] || { echo "Fatal: repository does not exist: unable to open config file" >&2; exit 10; }   # restic 0.17.3, measured
+     opens || { echo "Fatal: wrong password or no key found" >&2; exit 12; }
      [[ "$RESTIC_BACKUP_RC" == 0 ]] && { echo x >>"$R/snapshots"; echo '{"message_type":"summary","snapshot_id":"abc123","data_added":4096}'; exit 0; }
      [[ -n "${RESTIC_SILENT:-}" ]] || echo "Fatal: unable to open repo" >&2; exit "$RESTIC_BACKUP_RC" ;;
   *" forget "*) exit 0 ;;
@@ -214,6 +216,40 @@ export RESTIC_BACKUP_RC=0; ( cmd_backup run ) >/dev/null 2>&1; export RESTIC_BAC
 check "FAILED run (4): a silent restic never borrows an older log line" 'jq -e "(.error|test(\"run ok=\")|not) and (.error|test(\"printed no error\"))" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
 export RESTIC_SILENT="" RESTIC_BACKUP_RC=0
 check "CUSTODY: no report body carries the code" '! grep -q "$K" "$TMP/curl.body"'
+
+# --- DIVE-8151: a claimed warm spare backs up under its NEW owner's prefix ------------
+# The spare enabled and backed up under the pool's prefix; the claim moves enrol to
+# the client's prefix, which is empty. The box keeps its key and state `on`, so the
+# run goes straight to `restic backup`, which exits 10 (no repository there).
+claim() {   # a spare: enabled + one good run, Telegram off (the shipped default); then the claim
+  reset; export FIVE_BACKUP_KEY_TELEGRAM=0
+  ( cmd_backup run ) >/dev/null 2>&1; K=$(code_on_box)
+  ENROLL_BODY=$(jq -c '.prefix = "o-fedcba9876543210fedcba98/"' <<<"$ENROLL_BODY")
+  rm -rf "$TMP/repos/box-42"; : >"$TMP/restic.argv"; : >"$TMP/curl.body"
+}
+claim; run run
+check "CLAIM: the spare had a key and a good run before its claim (fixture)" '[[ -n "$K" ]] && jq -e ".lastOkAt != null" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
+check "CLAIM: the first run after the claim: rc 0, ok" '[[ $(rc) == 0 ]] && gq "backup: ok, snapshot abc123" "$TMP/out"'
+check "CLAIM: backup met rc 10, init made the repo, then ONE more backup" \
+  '[[ "$(cut -d" " -f4 "$TMP/restic.argv" | paste -sd,)" == backup,init,backup,forget ]] && gq "o-fedcba9876543210fedcba98/box-42 -o s3.region=auto init" "$TMP/restic.argv"'
+check "CLAIM: the new repo opens with the SAME key (the owner's one code), no second key made" '[[ "$(code_on_box)" == "$K" ]] && opens_repo box-42 "$K" && [[ $(wc -l <"$TMP/repos/box-42/keys") == 1 && -s "$TMP/repos/box-42/snapshots" ]]'
+check "CLAIM: status.json and the report say ok with the snapshot" 'jq -e ".ok == true and .snapshot == \"abc123\" and .error == null" "$FIVE_BACKUP_STATE/status.json" >/dev/null && gq "\"ok\":true" "$TMP/curl.body"'
+check "CLAIM: the log says why a repo was made" 'gq "no backup repository at box-42 yet, creating it" "$FIVE_BACKUP_LOG"'
+check "CLAIM: code-delivered never set on the spare, so the new owner still gets the code" '[[ ! -e "$FIVE_BACKUP_STATE/code-delivered" ]] && ( cmd_backup status --json ) 2>/dev/null | jq -e ".codeDelivered == false and .keyOnBox == true" >/dev/null'
+check "CUSTODY (CLAIM): no report body carries the code" '! grep -qF "$K" "$TMP/curl.body"'
+run run
+check "CLAIM: the next night backs up straight away, no second init" '[[ $(rc) == 0 && $(grep -c " init" "$TMP/restic.argv") == 1 ]]'
+# init itself fails: still a failure, said plainly, never a claimed ok.
+claim; export RESTIC_INIT_RC=1; run run; export RESTIC_INIT_RC=""
+check "CLAIM init fails: non-zero, status says the repo could not be created, reported not ok" \
+  '[[ $(rc) != 0 ]] && jq -e ".ok == false and (.error|test(\"could not be created\"))" "$FIVE_BACKUP_STATE/status.json" >/dev/null && gq "\"ok\":false" "$TMP/curl.body"'
+check "CLAIM init fails: no second backup attempt" '[[ $(grep -c " backup " "$TMP/restic.argv") == 1 ]]'
+# Only rc 10 inits. rc 12 (a repo here under ANOTHER key) and rc 1 never touch it.
+claim; seed box-42 "SOMEONE-ELSES-KEY"; run run
+check "rc 12 (another key's repo): a failure, never an init over it" '[[ $(rc) != 0 ]] && ! gq " init" "$TMP/restic.argv" && jq -e ".error|test(\"rc 12\")" "$FIVE_BACKUP_STATE/status.json" >/dev/null && opens_repo box-42 "SOMEONE-ELSES-KEY"'
+claim; ( cmd_backup run ) >/dev/null 2>&1; : >"$TMP/restic.argv"; export RESTIC_BACKUP_RC=1; run run; export RESTIC_BACKUP_RC=0
+check "rc 1: a failure as before, no init" '[[ $(rc) != 0 ]] && ! gq " init" "$TMP/restic.argv"'
+export FIVE_BACKUP_KEY_TELEGRAM=1
 
 # --- restore ----------------------------------------------------------------------
 GOOD=ABCDEFGHJKLMNPQRSTUVWXYZ2345

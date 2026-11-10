@@ -758,12 +758,29 @@ cmd_backup_run() {
     # A local destination inside a backed-up path must not back itself up.
     local own; own=$(_bk_dest) && [[ "$own" == /* ]] && ex+=(--exclude "$own")
     for p in "${BACKUP_PATHS[@]}"; do [[ -e "$p" ]] && paths+=("$p"); done
+    local bargs=(backup --json --exclude-caches "${ex[@]}" "${paths[@]}")
     errf=$(mktemp)
-    out=$(_bk_r "$dir/key" backup --json --exclude-caches "${ex[@]}" "${paths[@]}" 2>"$errf") || rc=$?
+    out=$(_bk_r "$dir/key" "${bargs[@]}" 2>"$errf") || rc=$?
     cat "$errf" >>"$log" 2>/dev/null
+    # DIVE-8151: rc 10 = no repository at this box's place. A claimed warm spare
+    # keeps its key but enrols under its NEW owner's prefix, which is empty, so
+    # every run met rc 10 and only enable knew to init. The box holds its key
+    # (checked above): create the repository with it, as enable does on rc 10,
+    # then back up once more. Any other rc stays a failure.
+    if [[ $rc -eq 10 ]]; then
+      printf '%s run: no backup repository at %s yet, creating it with the key on this box\n' "$(date -u +%FT%TZ)" "$BK_REPO" >>"$log" 2>/dev/null || true
+      if _bk_r "$dir/key" init >>"$log" 2>&1; then
+        rc=0; out=$(_bk_r "$dir/key" "${bargs[@]}" 2>"$errf") || rc=$?
+        cat "$errf" >>"$log" 2>/dev/null
+      else
+        err="no backup repository at $BK_REPO and it could not be created (restic init failed)"
+      fi
+    fi
     # rc 3 = some files could not be read (a socket, a file gone mid-run): the
     # snapshot is still written and usable.
-    if [[ $rc -eq 0 || $rc -eq 3 ]]; then
+    if [[ -n "$err" ]]; then
+      :
+    elif [[ $rc -eq 0 || $rc -eq 3 ]]; then
       snap=$(jq -r 'select(.message_type=="summary") | .snapshot_id // empty' <<<"$out" | tail -1)
       bytes=$(jq -r 'select(.message_type=="summary") | .data_added // empty' <<<"$out" | tail -1)
       [[ -n "$snap" ]] || err="backup finished without a snapshot"
