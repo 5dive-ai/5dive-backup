@@ -81,6 +81,14 @@ ck "the plaintext memory is not in the repository (encrypted)" '! grep -rq "blue
 ck "the key is not in the repository" '! grep -rqF "$CODE" "$DEST"'
 ck "box 1: ZERO requests to the 5dive API" '[[ ! -s "$W/curl.log" ]]'
 
+# ---- DIVE-8151 guard: the owner's own storage gone (a disk not mounted). The run
+# fails and says so; it never makes a new repository at that path.
+mv "$DEST" "$W/dest-away"; : >"$W/restic.argv"
+( cmd_backup run ) >"$W/o2g" 2>&1; r2g=$?
+ck "TO-GONE (real restic): rc 10 on the owner's path is a failure, no init, nothing written there" \
+  '[[ $r2g != 0 && ! -e "$DEST" ]] && ! grep -q " init" "$W/restic.argv" && jq -e ".ok == false and (.error|test(\"is the storage mounted\"))" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
+mv "$W/dest-away" "$DEST"
+
 # ---- box 2: empty, fresh key dir; restore --to with only the owner's code
 box 2; export FIVE_BACKUP_ROOT="$SB2" FIVE_CONNECTORD_ENV="$SB2/etc/5dive/connectord.env" FIVE_BACKUP_USERS="$SB2/var/lib/5dive/backup-users.tsv"
 ( cmd_backup restore --code="$(_bk_code_pretty "$CODE")" --to="$DEST" --yes ) >"$W/o3" 2>&1; r3=$?
@@ -92,6 +100,23 @@ ck "node_modules was never backed up" '[[ ! -e "$SB2/home/agent-ava/node_modules
 ck "the new box keeps its own identity" 'grep -qx "CONNECTORD_TOKEN=NEW_BOX" "$SB2/etc/5dive/connectord.env"'
 ck "box 2 now holds the owner's code as its key" '[[ "$(cat "$FIVE_BACKUP_DIR/key")" == "$CODE" ]]'
 ck "box 2: ZERO requests to the 5dive API (whole run)" '[[ ! -s "$W/curl.log" ]]'
+# ---- DIVE-8151: a claimed warm spare on 5dive's storage. Box 3 holds its spare-era
+# key and state on; enrol now hands out the new owner's place, which is empty. Only
+# the enrol/env seam is replaced (a local path stands in for R2); restic is real.
+box 3; export FIVE_BACKUP_ROOT="$SB" FIVE_CONNECTORD_ENV="$SB/etc/5dive/connectord.env" FIVE_BACKUP_USERS="$W/b3/users.tsv"
+NEWP="$W/new-owner-prefix/box-3"
+_bk_storage() { :; }
+_bk_env_load() { export RESTIC_REPOSITORY="$NEWP"; BK_REPO=box-3; }
+mkdir -p "$FIVE_BACKUP_DIR" "$FIVE_BACKUP_STATE"; install -m 0600 /dev/null "$FIVE_BACKUP_DIR/key"; printf '%s\n' "$CODE" >"$FIVE_BACKUP_DIR/key"; echo on >"$FIVE_BACKUP_STATE/state"
+: >"$W/restic.argv"
+( cmd_backup run ) >"$W/o4" 2>&1; r4=$?
+ck "CLAIM (real restic): backup met rc 10, the run made the repo with the box's key, rc 0, ok" \
+  '[[ $r4 == 0 && -f "$NEWP/config" ]] && grep -q " init" "$W/restic.argv" && jq -e ".ok == true and (.snapshot|length) > 0" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
+SNAPS=$(RESTIC_PASSWORD_FILE="$FIVE_BACKUP_DIR/key" "$REAL" -r "$NEWP" snapshots --json 2>/dev/null | jq length)
+ck "CLAIM (real restic): the new repo opens with the SAME code and holds one snapshot" '[[ "$SNAPS" == 1 && "$(cat "$FIVE_BACKUP_DIR/key")" == "$CODE" ]]'
+: >"$W/restic.argv"; ( cmd_backup run ) >"$W/o5" 2>&1; r5=$?
+ck "CLAIM (real restic): the next night backs up straight away, no second init" '[[ $r5 == 0 ]] && ! grep -q " init" "$W/restic.argv"'
+
 echo "--- restic calls made (real binary):"; cut -c1-110 "$W/restic.argv"
 echo "--- restore said:"; cat "$W/o3"
 echo "passed=$PASS failed=$FAIL"

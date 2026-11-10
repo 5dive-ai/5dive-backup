@@ -1,5 +1,23 @@
 # Changes
 
+## 1.1.4 — 2026-11-10 (DIVE-8151, a claimed warm spare stops backing up)
+
+- `backup run` creates the repository when restic says there is none (rc 10),
+  using the key already on the box, then backs up once more. A warm spare backs
+  up under the pool's storage place; once a client claims it, enrol hands out
+  the client's place, which is empty, and every nightly run failed with rc 10
+  because only `enable` knew to create it. Any other rc (12: a repository there
+  under another key; 1; …) stays a failure and is never initialised over. An
+  init that fails says so. The owner's recovery code does not change. Arms
+  CLAIM (stub and real restic, `tests/to_real_restic.sh`), mutant m25.
+- Only on 5dive's storage. On the owner's own (`--to`), rc 10 means the storage
+  is not there (a disk not mounted, a bucket gone): the run fails and says to
+  check it, and never creates a new repository, which on an empty mount point
+  would land on the system disk and hide the problem. Arm TO-GONE (stub and
+  real restic), mutant m26.
+- The pool's place keeps an orphan spare-era repository per claimed spare (no
+  customer data). Not cleaned up here.
+
 ## 1.1.3 — 2026-11-08 (docs: for anyone running 5dive)
 
 - README leads with the self-hosted path: add the plugin, save your storage
