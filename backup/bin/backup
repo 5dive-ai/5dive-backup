@@ -766,8 +766,13 @@ cmd_backup_run() {
     # keeps its key but enrols under its NEW owner's prefix, which is empty, so
     # every run met rc 10 and only enable knew to init. The box holds its key
     # (checked above): create the repository with it, as enable does on rc 10,
-    # then back up once more. Any other rc stays a failure.
-    if [[ $rc -eq 10 ]]; then
+    # then back up once more. Any other rc stays a failure. Only on 5dive's
+    # storage: on the owner's own (--to), rc 10 means it is not there (a disk
+    # not mounted, a bucket gone), and a new repo would hide that, e.g. on the
+    # system disk under an empty mount point.
+    if [[ $rc -eq 10 && -n "$own" ]]; then
+      err="no backup repository at $own (is the storage mounted and reachable? 5dive backup enable --to=$own creates one)"
+    elif [[ $rc -eq 10 ]]; then
       printf '%s run: no backup repository at %s yet, creating it with the key on this box\n' "$(date -u +%FT%TZ)" "$BK_REPO" >>"$log" 2>/dev/null || true
       if _bk_r "$dir/key" init >>"$log" 2>&1; then
         rc=0; out=$(_bk_r "$dir/key" "${bargs[@]}" 2>"$errf") || rc=$?

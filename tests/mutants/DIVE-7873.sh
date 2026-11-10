@@ -56,4 +56,6 @@ m23() { sed -i '/^  # One run at a time, taken BEFORE the auto-enable below/,/^ 
 # m24 (DIVE-7929): the identity-less run is silent in the log again -> IDENT reds.
 m24() { sed -i 's/^    printf .%s run skipped: no %s, so this is not a 5dive-managed box.*$/    true \\/' backup/bin/backup; }
 # m25 (DIVE-8151): the run never inits on rc 10, so a claimed spare fails every night -> CLAIM reds.
-m25() { sed -i 's/^    if \[\[ \$rc -eq 10 \]\]; then$/    if false; then/' backup/bin/backup; }
+m25() { sed -i 's/^    elif \[\[ \$rc -eq 10 \]\]; then$/    elif false; then/' backup/bin/backup; }
+# m26 (DIVE-8151): the run inits on rc 10 on the owner's own storage too -> TO-GONE reds.
+m26() { sed -i 's/^    if \[\[ \$rc -eq 10 \&\& -n "\$own" \]\]; then$/    if false; then/' backup/bin/backup; }

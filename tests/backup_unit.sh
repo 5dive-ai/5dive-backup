@@ -327,6 +327,11 @@ check "TO4 sources names the one destination, with no listing call" 'grep -q "$M
 # KEY OFF holds on the --to path too (1.0.1 under 1.1.0): no opt-in, no message, the code stays on the box.
 reset; unset FIVE_BACKUP_KEY_TELEGRAM; run enable --to="$MINE"; ( cmd_backup run ) >/dev/null 2>&1
 check "TO1 KEY OFF: --to enable and its first run send no Telegram message by default" '[[ "$(rc)" == 0 && -n "$(code_on_box)" && ! -s "$TMP/tg" && ! -e "$FIVE_BACKUP_STATE/code-delivered" ]]'
+# DIVE-8151 does NOT reach the owner's own storage: rc 10 there means it is not there
+# (a disk not mounted, a bucket gone), so the run fails and never makes a new repo.
+rm -rf "$TMP/repos/mine"; : >"$TMP/restic.argv"; run run
+check "TO-GONE --to storage missing (rc 10): a failure that says so, never an init" \
+  '[[ $(rc) != 0 ]] && ! gq " init" "$TMP/restic.argv" && [[ ! -e "$TMP/repos/mine" ]] && jq -e ".ok == false and (.error|test(\"is the storage mounted\"))" "$FIVE_BACKUP_STATE/status.json" >/dev/null'
 export FIVE_BACKUP_KEY_TELEGRAM=1
 
 reset; mkdir -p "$CONNECTORS_DIR"
