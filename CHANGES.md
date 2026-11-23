@@ -1,5 +1,13 @@
 # Changes
 
+## 1.1.5 — 2026-11-23 (DIVE-9129, a failed enrol said "http ?")
+
+- When the 5dive API gives a box no backup storage, the run's error now names
+  the HTTP status and the API's code, e.g. `(http 502 r2_unavailable)`, instead
+  of `(http ?)`. The status was set inside `$(...)` and lost; enrol now reads
+  the answer through a file so it survives. The API side of DIVE-9129 retries
+  Cloudflare's passing 5xx, so this message should now be rare.
+
 ## 1.1.4 — 2026-11-10 (DIVE-8151, a claimed warm spare stops backing up)
 
 - `backup run` creates the repository when restic says there is none (rc 10),
