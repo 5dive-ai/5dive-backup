@@ -198,6 +198,12 @@ for bad in '"prefix":"../o-x/"' '"prefix":""' '"sessionToken":"a$(id)"' '"sessio
 done
 reset; ENROLL_HTTP=503; ENROLL_BODY='{"code":"backup_not_configured"}'; run enable --auto
 check "--auto: an unready API never fails the caller, and says why" '[[ $(rc) == 0 ]] && grep -q "backup_not_configured" "$FIVE_BACKUP_LOG"'
+check "--auto: the reason carries the HTTP status too (DIVE-9129)" 'grep -q "(http 503 backup_not_configured)" "$FIVE_BACKUP_LOG"'
+
+# DIVE-9129: Cloudflare's passing 500 reached the box as 502 r2_unavailable and
+# the run said "http ?" (BK_HTTP was set inside $(...) and lost).
+reset; ( cmd_backup enable ) >/dev/null 2>&1; : >"$TMP/curl.body"; ENROLL_HTTP=502; ENROLL_BODY='{"code":"r2_unavailable"}'; run run
+check "run: no storage -> the error names the HTTP status and the API's code, never \"http ?\"" '[[ $(rc) != 0 ]] && grep -q "did not give this box backup storage (http 502 r2_unavailable)" "$TMP/curl.body" && ! grep -q "http ?" "$TMP/curl.body"'
 
 # --- run -------------------------------------------------------------------------
 reset; ( cmd_backup enable ) >/dev/null 2>&1; K=$(code_on_box); : >"$TMP/curl.body"; : >"$TMP/curl.argv"; run run

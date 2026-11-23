@@ -375,8 +375,16 @@ _bk_api() {   # <method> <path> [json body]  — body on stdout, sets BK_HTTP
   cat "$out"; rm -f "$out"
   [[ "$BK_HTTP" == 2* ]]
 }
+# On failure prints, and leaves in BK_WHY, "http <code> [<API code>]". The call
+# writes to a file, not $(...), so BK_HTTP survives into this shell (DIVE-9129:
+# a nightly run used to say "http ?").
 _bk_enroll() {
-  local j; j=$(_bk_api POST /enroll '{}') || { echo "$j" | jq -r '.code // empty' 2>/dev/null; return 1; }
+  local j f; BK_WHY=""; f=$(mktemp) || return 1
+  if ! _bk_api POST /enroll '{}' >"$f"; then
+    j=$(jq -r '.code // empty' "$f" 2>/dev/null); rm -f "$f"
+    BK_WHY="http ${BK_HTTP:-?}${j:+ $j}"; echo "$BK_WHY"; return 1
+  fi
+  j=$(cat "$f"); rm -f "$f"
   local ep b px ak sk st sid
   ep=$(jq -r '.endpoint // empty' <<<"$j"); b=$(jq -r '.bucket // empty' <<<"$j"); px=$(jq -r '.prefix // empty' <<<"$j")
   ak=$(jq -r '.accessKeyId // empty' <<<"$j"); sk=$(jq -r '.secretAccessKey // empty' <<<"$j")
@@ -747,7 +755,7 @@ cmd_backup_run() {
   if [[ ! -r "$dir/key" ]]; then
     err="no backup key on this box"
   elif ! _bk_storage >/dev/null; then
-    err="the 5dive API did not give this box backup storage (http ${BK_HTTP:-?})"
+    err="the 5dive API did not give this box backup storage (${BK_WHY:-http ${BK_HTTP:-?}})"
   elif ! _bk_env_load; then
     err="backup storage settings missing"
   else
